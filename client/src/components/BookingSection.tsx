@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -17,30 +17,67 @@ import { MapPin, Phone, Mail, Clock, CheckCircle, Loader2 } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
+
+const validExperiences = ["sim", "fpv", "both"] as const;
+const validPlans = ["starter", "racer", "champion", "squad"] as const;
 
 const bookingSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
-  email: z.string().email("Please enter a valid email"),
-  phone: z.string().min(8, "Please enter a valid phone number"),
-  experience: z.string().min(1, "Please select an experience"),
-  plan: z.string().min(1, "Please select a plan"),
-  date: z.string().min(1, "Please select a date"),
-  guests: z.string().min(1, "Please select number of guests"),
+  email: z.string().email("Please enter a valid email").transform(v => v.trim().toLowerCase()),
+  phone: z.string().optional().default(""),
+  experience: z.enum(validExperiences, { errorMap: () => ({ message: "Please select a valid experience" }) }),
+  plan: z.enum(validPlans, { errorMap: () => ({ message: "Please select a valid plan" }) }),
+  date: z.string().min(1, "Please select a date").refine((val) => {
+    const selected = new Date(val);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return selected >= today;
+  }, "Date must be today or in the future"),
+  timeSlot: z.string().min(1, "Please select a time slot"),
+  guests: z.string().min(1, "Please select number of guests").refine((val) => {
+    const n = Number(val);
+    return !isNaN(n) && n >= 1 && n <= 5;
+  }, "Guests must be between 1 and 5"),
   message: z.string().optional(),
 });
 
 type BookingFormData = z.infer<typeof bookingSchema>;
 
+interface SlotInfo {
+  time: string;
+  bookedGuests: number;
+  availableSpots: number;
+  full: boolean;
+  blocked?: boolean;
+}
+
+function formatSlotLabel(time: string): string {
+  const [h] = time.split(":");
+  const hour = parseInt(h, 10);
+  const endHour = hour + 1;
+  const fmt = (hr: number) => {
+    const ampm = hr >= 12 ? "PM" : "AM";
+    const h12 = hr > 12 ? hr - 12 : hr === 0 ? 12 : hr;
+    return `${h12}:00 ${ampm}`;
+  };
+  return `${fmt(hour)} – ${fmt(endHour)}`;
+}
+
 const contactInfo = [
   { icon: MapPin, label: "Location", value: "MetaRacing Arena, Tech Park, Bangalore" },
-  { icon: Clock, label: "Hours", value: "Mon–Sun: 10:00 AM – 11:00 PM" },
+  { icon: Clock, label: "Hours", value: "Mon–Sun: 9:00 AM – 9:00 PM" },
   { icon: Phone, label: "Phone", value: "+91 98765 43210" },
   { icon: Mail, label: "Email", value: "race@metaracing.in" },
 ];
 
 export default function BookingSection() {
   const { toast } = useToast();
+  const { customer } = useAuth();
   const [submitted, setSubmitted] = useState(false);
+  const [slots, setSlots] = useState<SlotInfo[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [dateClosed, setDateClosed] = useState(false);
 
   const form = useForm<BookingFormData>({
     resolver: zodResolver(bookingSchema),
@@ -48,26 +85,69 @@ export default function BookingSection() {
       name: "",
       email: "",
       phone: "",
-      experience: "",
-      plan: "",
+      experience: "both",
+      plan: "squad",
       date: "",
+      timeSlot: "",
       guests: "",
       message: "",
     },
   });
 
+  const selectedDate = form.watch("date");
+
+  // Fetch available slots when date changes
+  useEffect(() => {
+    if (!selectedDate) {
+      setSlots([]);
+      setDateClosed(false);
+      form.setValue("timeSlot", "");
+      return;
+    }
+    let cancelled = false;
+    setSlotsLoading(true);
+    fetch(`/api/slots?date=${selectedDate}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) {
+          setSlots(data.slots || []);
+          setDateClosed(!!data.closed);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSlots([]);
+          setDateClosed(false);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSlotsLoading(false);
+      });
+    form.setValue("timeSlot", "");
+    return () => { cancelled = true; };
+  }, [selectedDate]);
+
   const bookingMutation = useMutation({
     mutationFn: async (data: BookingFormData) => {
-      return apiRequest("POST", "/api/bookings", data);
+      return apiRequest("POST", "/api/bookings", {
+        ...data,
+        customerId: customer?.id ?? null,
+      });
     },
     onSuccess: () => {
       setSubmitted(true);
       form.reset();
+      setSlots([]);
+       toast({
+        title: "Booking Received!",
+        description: "We'll confirm your session shortly via email.",
+      });
     },
     onError: () => {
       toast({
-        title: "Booking Received!",
-        description: "We'll confirm your session shortly via email.",
+        title: "Booking Failed",
+        description: "There was an issue with your booking. Please try again.",
+        variant: "destructive",
       });
       setSubmitted(true);
       form.reset();
@@ -214,6 +294,53 @@ export default function BookingSection() {
                       />
                     </div>
 
+                    {/* Time Slot Picker */}
+                    {selectedDate && (
+                      <FormField
+                        control={form.control}
+                        name="timeSlot"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="text-xs uppercase tracking-widest font-racing">Time Slot</FormLabel>
+                            {slotsLoading ? (
+                              <div className="flex items-center gap-2 py-2">
+                                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                                <span className="text-sm text-muted-foreground">Loading slots...</span>
+                              </div>
+                            ) : dateClosed ? (
+                              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                                This date is closed for bookings. Please choose another date.
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                                {slots.map((s) => (
+                                  <button
+                                    key={s.time}
+                                    type="button"
+                                    disabled={s.full}
+                                    onClick={() => field.onChange(s.time)}
+                                    className={`px-2 py-2 rounded-md border text-xs font-racing uppercase tracking-wide transition-all ${
+                                      s.full
+                                        ? "border-border/30 bg-muted/30 text-muted-foreground cursor-not-allowed line-through opacity-50"
+                                        : field.value === s.time
+                                          ? "border-primary bg-primary/15 text-primary ring-1 ring-primary"
+                                          : "border-border/50 hover:border-primary/50 text-foreground"
+                                    }`}
+                                  >
+                                    <div>{formatSlotLabel(s.time)}</div>
+                                    <div className={`text-[10px] mt-0.5 ${s.full ? "text-red-400" : "text-green-400"}`}>
+                                      {s.full ? "Full" : `${s.availableSpots} left`}
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
                     <div className="grid sm:grid-cols-3 gap-4">
                       <FormField
                         control={form.control}
@@ -253,7 +380,7 @@ export default function BookingSection() {
                                 <SelectItem value="starter">Starter (30 min)</SelectItem>
                                 <SelectItem value="racer">Racer (1 hour)</SelectItem>
                                 <SelectItem value="champion">Champion (2 hours)</SelectItem>
-                                <SelectItem value="group">Squad (Group)</SelectItem>
+                                <SelectItem value="squad">Squad (Group)</SelectItem>
                               </SelectContent>
                             </Select>
                             <FormMessage />
@@ -277,7 +404,7 @@ export default function BookingSection() {
                                 <SelectItem value="2">2 people</SelectItem>
                                 <SelectItem value="3">3 people</SelectItem>
                                 <SelectItem value="4">4 people</SelectItem>
-                                <SelectItem value="5+">5+ people</SelectItem>
+                                <SelectItem value="5">5 people</SelectItem>
                               </SelectContent>
                             </Select>
                             <FormMessage />

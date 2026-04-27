@@ -97,6 +97,9 @@ export default function Navbar() {
           <div className="hidden md:flex items-center gap-2 flex-shrink-0">
             {customer ? (
               <>
+                <Button size="sm" asChild data-testid="button-book-now">
+                  <a href="#booking">Book Now</a>
+                </Button>
                 <Button size="sm" variant="outline" asChild data-testid="button-dashboard">
                   <a href="/dashboard">
                     <LayoutDashboard className="w-3.5 h-3.5 mr-1.5" />

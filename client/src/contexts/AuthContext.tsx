@@ -1,15 +1,16 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 export interface Customer {
-  id: string;
+  id: number;
   name: string;
   email: string;
+  phone: string;
 }
 
 interface AuthContextType {
   customer: Customer | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, phone: string, password: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -45,11 +46,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("mr_customer", JSON.stringify(data.customer));
   };
 
-  const register = async (name: string, email: string, password: string) => {
+  const register = async (name: string, email: string, phone: string, password: string) => {
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, phone, password }),
     });
     if (!res.ok) {
       const err = await res.json();

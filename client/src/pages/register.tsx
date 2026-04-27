@@ -12,8 +12,9 @@ import { Loader2, Eye, EyeOff } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const registerSchema = z.object({
-  name: z.string().min(2, "Name must be at least 2 characters"),
-  email: z.string().email("Enter a valid email"),
+  name: z.string().min(2, "Name must be at least 2 characters").regex(/^[a-zA-Z\s]+$/, "Name can only contain letters and spaces"),
+  email: z.string().email("Enter a valid email").transform(v => v.trim().toLowerCase()),
+  phone: z.string().optional().default(""),
   password: z.string().min(6, "Password must be at least 6 characters"),
   confirmPassword: z.string(),
 }).refine((d) => d.password === d.confirmPassword, {
@@ -32,13 +33,13 @@ export default function RegisterPage() {
 
   const form = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { name: "", email: "", password: "", confirmPassword: "" },
+    defaultValues: { name: "", email: "", phone: "", password: "", confirmPassword: "" },
   });
 
   const onSubmit = async (data: RegisterForm) => {
     setLoading(true);
     try {
-      await register(data.name, data.email, data.password);
+      await register(data.name, data.email, data.phone, data.password);
       navigate("/dashboard");
     } catch (err: any) {
       toast({ title: "Registration failed", description: err.message, variant: "destructive" });
@@ -95,6 +96,19 @@ export default function RegisterPage() {
                       <FormLabel className="text-xs uppercase tracking-widest font-racing">Email</FormLabel>
                       <FormControl>
                         <Input type="email" placeholder="you@example.com" {...field} data-testid="input-register-email" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="phone"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs uppercase tracking-widest font-racing">Phone Number</FormLabel>
+                      <FormControl>
+                        <Input type="tel" placeholder="9876543210" {...field} data-testid="input-register-phone" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
