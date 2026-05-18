@@ -7,9 +7,10 @@ import { useLocation } from "wouter";
 const navLinks = [
   { label: "Home", href: "#home" },
   { label: "Experiences", href: "#experiences" },
+  { label: "Sim Racing", href: "#sim-racing" },
   { label: "Pricing", href: "#pricing" },
   { label: "Leaderboard", href: "#leaderboard" },
-  { label: "Contact", href: "#booking" },
+  { label: "Contact", href: "#contact" },
 ];
 
 export default function Navbar() {
@@ -22,7 +23,7 @@ export default function Navbar() {
   useEffect(() => {
     const handleScroll = () => {
       setScrolled(window.scrollY > 40);
-      const sections = ["home", "experiences", "pricing", "leaderboard", "booking"];
+      const sections = ["home", "experiences", "sim-racing", "pricing", "leaderboard", "booking"];
       for (const sec of sections) {
         const el = document.getElementById(sec);
         if (el) {
@@ -98,7 +99,7 @@ export default function Navbar() {
             {customer ? (
               <>
                 <Button size="sm" asChild data-testid="button-book-now">
-                  <a href="#booking">Book Now</a>
+                  <a href="/book">Book Now</a>
                 </Button>
                 <Button size="sm" variant="outline" asChild data-testid="button-dashboard">
                   <a href="/dashboard">
@@ -155,6 +156,9 @@ export default function Navbar() {
             ))}
             {customer ? (
               <>
+                <Button className="mt-1" asChild>
+                  <a href="/book">Book Now</a>
+                </Button>
                 <Button className="mt-1" variant="outline" asChild>
                   <a href="/dashboard">My Dashboard</a>
                 </Button>

@@ -42,6 +42,9 @@ export default function AdminLoginPage() {
       }
       const result = await res.json();
       localStorage.setItem("mr_admin", JSON.stringify(result.admin));
+      if (typeof result.token === "string") {
+        localStorage.setItem("mr_admin_token", result.token);
+      }
       navigate("/admin/dashboard");
     } catch (err: any) {
       toast({ title: "Access Denied", description: err.message, variant: "destructive" });

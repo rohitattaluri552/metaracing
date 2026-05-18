@@ -7,14 +7,28 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+function resolveAuthToken(url: string): string | null {
+  const customerToken = localStorage.getItem("mr_customer_token");
+  const adminToken = localStorage.getItem("mr_admin_token");
+  if (url.startsWith("/api/admin")) return adminToken;
+  if (url.startsWith("/api/customers")) return customerToken;
+  return customerToken || adminToken;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  const token = resolveAuthToken(url);
+  const headers: Record<string, string> = data ? { "Content-Type": "application/json" } : {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
@@ -29,7 +43,10 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = queryKey.join("/") as string;
+    const token = resolveAuthToken(url);
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       credentials: "include",
     });
 

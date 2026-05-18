@@ -1,4 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
+import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -6,6 +8,16 @@ import { setupMqtt } from "./mqtt";
 
 const app = express();
 const httpServer = createServer(app);
+
+app.use(helmet({
+  // Disabled for current frontend setup; can be tightened in production rollout.
+  contentSecurityPolicy: false,
+}));
+
+app.use(cors({
+  origin: true,
+  credentials: true,
+}));
 
 declare module "http" {
   interface IncomingMessage {

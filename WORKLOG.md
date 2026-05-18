@@ -50,3 +50,43 @@
 - Admin session stored separately in localStorage (mr_admin)
 
 ---Credentials: admin@metaracing.in / MetaRacing@2026
+
+---
+
+## 28 April 2026
+
+### 9. Route Protection and Authorization (Phase 1)
+- Added JWT-based authorization guards in backend routes
+- Protected customer routes using role-aware middleware
+- Protected admin routes using role-aware middleware
+- Removed legacy header-trust admin auth dependency (`x-admin-email`)
+- Enforced customer ownership checks on customer profile/booking endpoints
+
+### 10. JWT Authentication Rollout (Self-hosted)
+- Added JWT token issuance on:
+	- customer register/login
+	- customer OTP verify
+	- admin login
+- Added backend token verification helpers and bearer token parsing
+- Updated frontend auth state and token persistence:
+	- customer token: `mr_customer_token`
+	- admin token: `mr_admin_token`
+- Updated shared fetch/query logic to attach correct bearer token automatically for customer/admin APIs
+
+### 11. Booking Integrity and Identity Hardening
+- Public booking endpoint now validates authenticated identity when bearer token is present
+- Prevented customer ID spoofing by rejecting identity mismatches
+- Rejected non-customer JWT roles on customer/public booking creation flow
+
+### 12. Basic Security Middleware
+- Enabled `helmet` in Express server setup
+- Enabled `cors` middleware in Express server setup
+
+### 13. Validation and Documentation Updates
+- TypeScript/JWT typing fixes completed in backend route helpers
+- Admin schedule date parameter typing hardened for strict TS checks
+- `npm run check` completed successfully after security migration fixes
+- Updated backend security checklist with:
+	- implemented now (Phase 1)
+	- remaining tasks for next phase
+

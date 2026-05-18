@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -33,6 +36,7 @@ import {
   Ban,
   Settings,
   XCircle,
+  CalendarDays,
 } from "lucide-react";
 
 interface AdminStats {
@@ -52,6 +56,7 @@ interface AdminStats {
     timeSlot: string;
     guests: string;
     status: string;
+    otpVerified?: boolean;
     createdAt: string | null;
   }[];
 }
@@ -60,7 +65,15 @@ interface SlotMember {
   id: number;
   name: string;
   email: string;
+  phone: string;
   guests: string;
+  checkinVerified?: boolean;
+  checkinOtpVisible?: boolean;
+  checkinOtp?: string | null;
+  minutesUntilSlot?: number | null;
+  paymentStatus?: string;
+  paymentAmount?: number;
+  paymentMode?: string;
 }
 
 interface AdminSlot {
@@ -92,6 +105,8 @@ interface SearchBooking {
   timeSlot: string;
   guests: string;
   status: string;
+  checkinVerified?: boolean;
+  paymentStatus?: string;
   createdAt: string | null;
 }
 
@@ -105,6 +120,15 @@ function formatSlotLabel(time: string): string {
     return `${h12}:00 ${ampm}`;
   };
   return `${fmt(hour)} – ${fmt(endHour)}`;
+}
+
+function isCancellationLocked(booking: {
+  checkinVerified?: boolean;
+  paymentStatus?: string;
+  otpVerified?: boolean;
+}): boolean {
+  const verified = typeof booking.checkinVerified === "boolean" ? booking.checkinVerified : !!booking.otpVerified;
+  return verified && booking.paymentStatus === "done";
 }
 
 const SLOT_OPTIONS = [
@@ -138,6 +162,8 @@ export default function AdminDashboardPage() {
   const [schedLoading, setSchedLoading] = useState(false);
   const [schedSaving, setSchedSaving] = useState(false);
   const [slotClosed, setSlotClosed] = useState(false);
+  const [schedCalendarOpen, setSchedCalendarOpen] = useState(false);
+  const [bookDateCalendarOpen, setBookDateCalendarOpen] = useState(false);
 
   // Booking search state
   const [searchOpen, setSearchOpen] = useState(false);
@@ -148,6 +174,12 @@ export default function AdminDashboardPage() {
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
+  const [verifyingCheckinId, setVerifyingCheckinId] = useState<number | null>(null);
+  const [checkinOtpInputs, setCheckinOtpInputs] = useState<Record<number, string>>({});
+  const [paymentDialogMemberId, setPaymentDialogMemberId] = useState<number | null>(null);
+  const [paymentAmountInput, setPaymentAmountInput] = useState("");
+  const [paymentModeInput, setPaymentModeInput] = useState("cash");
+  const [markingPaymentId, setMarkingPaymentId] = useState<number | null>(null);
 
   const admin = (() => {
     try {
@@ -157,9 +189,14 @@ export default function AdminDashboardPage() {
       return null;
     }
   })();
+  const adminToken = localStorage.getItem("mr_admin_token") || "";
+  const authHeaders = (includeJson = false): Record<string, string> => ({
+    ...(includeJson ? { "Content-Type": "application/json" } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
+  });
 
   useEffect(() => {
-    if (!admin) {
+    if (!admin || !adminToken) {
       navigate("/admin");
       return;
     }
@@ -172,12 +209,11 @@ export default function AdminDashboardPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/admin/stats", {
-        headers: { "x-admin-email": admin?.email || "" },
-      });
+      const res = await fetch("/api/admin/stats", { headers: authHeaders() });
       if (!res.ok) {
         if (res.status === 401) {
           localStorage.removeItem("mr_admin");
+          localStorage.removeItem("mr_admin_token");
           navigate("/admin");
           return;
         }
@@ -195,9 +231,7 @@ export default function AdminDashboardPage() {
   const fetchSlots = async (date: string) => {
     setSlotsLoading(true);
     try {
-      const res = await fetch(`/api/admin/slots?date=${date}`, {
-        headers: { "x-admin-email": admin?.email || "" },
-      });
+      const res = await fetch(`/api/admin/slots?date=${date}`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         setAdminSlots(data.slots || []);
@@ -220,9 +254,7 @@ export default function AdminDashboardPage() {
   const fetchSchedule = async (date: string) => {
     setSchedLoading(true);
     try {
-      const res = await fetch(`/api/admin/schedule/${date}`, {
-        headers: { "x-admin-email": admin?.email || "" },
-      });
+      const res = await fetch(`/api/admin/schedule/${date}`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.override) {
@@ -256,7 +288,7 @@ export default function AdminDashboardPage() {
     try {
       const res = await fetch("/api/admin/schedule", {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "x-admin-email": admin?.email || "" },
+        headers: authHeaders(true),
         body: JSON.stringify({ ...schedForm, date: schedDate }),
       });
       if (!res.ok) {
@@ -280,7 +312,7 @@ export default function AdminDashboardPage() {
     try {
       await fetch(`/api/admin/schedule/${schedDate}`, {
         method: "DELETE",
-        headers: { "x-admin-email": admin?.email || "" },
+        headers: authHeaders(),
       });
       setSchedForm({
         date: schedDate, closed: false, openTime: "09:00", closeTime: "21:00", maxGuestsPerSlot: 5, blockedSlots: "",
@@ -306,7 +338,7 @@ export default function AdminDashboardPage() {
     try {
       const res = await fetch(`/api/admin/bookings/${id}/cancel`, {
         method: "PATCH",
-        headers: { "x-admin-email": admin?.email || "" },
+        headers: authHeaders(),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -323,6 +355,74 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleVerifyCheckin = async (id: number) => {
+    const otp = (checkinOtpInputs[id] || "").trim();
+    if (!/^\d{6}$/.test(otp)) {
+      alert("Enter a valid 6-digit OTP");
+      return;
+    }
+    setVerifyingCheckinId(id);
+    try {
+      const res = await fetch(`/api/admin/bookings/${id}/verify-checkin`, {
+        method: "PATCH",
+        headers: authHeaders(true),
+        body: JSON.stringify({ otp }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || "Failed to verify check-in");
+        return;
+      }
+      setCheckinOtpInputs((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      fetchStats();
+      fetchSlots(slotDate);
+      if (searchOpen) searchBookings();
+      // Open payment confirmation dialog
+      setPaymentAmountInput("");
+      setPaymentDialogMemberId(id);
+    } catch {
+      alert("Failed to verify check-in");
+    } finally {
+      setVerifyingCheckinId(null);
+    }
+  };
+
+  const handleMarkPayment = async () => {
+    if (paymentDialogMemberId === null) return;
+    const amount = parseInt(paymentAmountInput, 10);
+    if (isNaN(amount) || amount < 0) {
+      alert("Enter a valid payment amount");
+      return;
+    }
+    setMarkingPaymentId(paymentDialogMemberId);
+    try {
+      const res = await fetch(`/api/admin/bookings/${paymentDialogMemberId}/payment`, {
+        method: "PATCH",
+        headers: authHeaders(true),
+        body: JSON.stringify({ amount, mode: paymentModeInput }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || "Failed to mark payment");
+        return;
+      }
+      setPaymentDialogMemberId(null);
+      setPaymentAmountInput("");
+      setPaymentModeInput("cash");
+      fetchStats();
+      fetchSlots(slotDate);
+      if (searchOpen) searchBookings();
+    } catch {
+      alert("Failed to mark payment");
+    } finally {
+      setMarkingPaymentId(null);
+    }
+  };
+
   // Search bookings
   const searchBookings = async (page = 1) => {
     setSearchLoading(true);
@@ -331,9 +431,7 @@ export default function AdminDashboardPage() {
       const params = new URLSearchParams({ page: String(page), perPage: "15" });
       if (searchQuery) params.set("q", searchQuery);
       if (searchStatus !== "all") params.set("status", searchStatus);
-      const res = await fetch(`/api/admin/bookings?${params}`, {
-        headers: { "x-admin-email": admin?.email || "" },
-      });
+      const res = await fetch(`/api/admin/bookings?${params}`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         setSearchResults(data.bookings || []);
@@ -347,9 +445,7 @@ export default function AdminDashboardPage() {
   const fetchBookSlots = async (date: string) => {
     setBookSlotsLoading(true);
     try {
-      const res = await fetch(`/api/admin/slots?date=${date}`, {
-        headers: { "x-admin-email": admin?.email || "" },
-      });
+      const res = await fetch(`/api/admin/slots?date=${date}`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         setBookSlots(data.slots || []);
@@ -369,6 +465,9 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const schedDateValue = schedDate ? new Date(`${schedDate}T00:00:00`) : undefined;
+  const bookDateValue = bookForm.date ? new Date(`${bookForm.date}T00:00:00`) : undefined;
+
   const handleAdminBook = async () => {
     const { name, email, experience, plan, date, timeSlot, guests } = bookForm;
     if (!name || !email || !experience || !plan || !date || !timeSlot || !guests) {
@@ -379,10 +478,7 @@ export default function AdminDashboardPage() {
     try {
       const res = await fetch("/api/admin/bookings", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-admin-email": admin?.email || "",
-        },
+        headers: authHeaders(true),
         body: JSON.stringify(bookForm),
       });
       if (!res.ok) {
@@ -405,10 +501,11 @@ export default function AdminDashboardPage() {
 
   const handleLogout = () => {
     localStorage.removeItem("mr_admin");
+    localStorage.removeItem("mr_admin_token");
     navigate("/admin");
   };
 
-  if (!admin) return null;
+  if (!admin || !adminToken) return null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -537,6 +634,7 @@ export default function AdminDashboardPage() {
                           <TableHead className="font-racing uppercase text-xs tracking-widest">Slot</TableHead>
                           <TableHead className="font-racing uppercase text-xs tracking-widest">Guests</TableHead>
                           <TableHead className="font-racing uppercase text-xs tracking-widest">Status</TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">OTP Verified</TableHead>
                           <TableHead className="font-racing uppercase text-xs tracking-widest">Action</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -564,20 +662,42 @@ export default function AdminDashboardPage() {
                               </Badge>
                             </TableCell>
                             <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={
+                                  b.otpVerified
+                                    ? "border-green-600/30 text-green-400"
+                                    : "border-amber-500/30 text-amber-400"
+                                }
+                              >
+                                {b.otpVerified ? "Yes" : "No"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
                               {b.status === "confirmed" && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="text-red-400 hover:text-red-300 hover:bg-red-600/10 h-7 px-2"
-                                  onClick={() => handleCancelBooking(b.id)}
-                                  disabled={cancellingId === b.id}
-                                >
-                                  {cancellingId === b.id ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
-                                  )}
-                                </Button>
+                                isCancellationLocked(b) ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-green-600/30 text-green-400 text-[10px]"
+                                    title="Cannot cancel after OTP verification and payment completion"
+                                  >
+                                    Locked
+                                  </Badge>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-red-400 hover:text-red-300 hover:bg-red-600/10 h-7 px-2"
+                                    onClick={() => handleCancelBooking(b.id)}
+                                    disabled={cancellingId === b.id}
+                                  >
+                                    {cancellingId === b.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
+                                    )}
+                                  </Button>
+                                )
                               )}
                             </TableCell>
                           </TableRow>
@@ -661,12 +781,54 @@ export default function AdminDashboardPage() {
                               {s.members.map((m) => (
                                 <div
                                   key={m.id}
-                                  className="text-xs flex items-center justify-between bg-background/50 rounded px-2 py-1"
+                                  className="text-xs bg-background/50 rounded px-2 py-1"
                                 >
-                                  <span className="truncate mr-2">{m.name}</span>
-                                  <span className="text-muted-foreground whitespace-nowrap">
+                                  <div className="font-medium truncate">{m.name}</div>
+                                  <div className="text-[11px] text-muted-foreground truncate">{m.phone || "No phone"}</div>
+                                  <div className="text-[11px] text-muted-foreground">
                                     {m.guests} guest{Number(m.guests) !== 1 ? "s" : ""}
-                                  </span>
+                                  </div>
+                                  <div className="text-[11px] mt-1">
+                                    {m.checkinVerified && m.paymentStatus === "done" ? (
+                                      <span className="text-green-400">✓ OTP Verified · ₹{m.paymentAmount} Paid{m.paymentMode ? ` (${m.paymentMode.toUpperCase()})` : ""}</span>
+                                    ) : m.checkinVerified ? (
+                                      <span className="text-yellow-400">✓ OTP Verified · Payment Pending</span>
+                                    ) : m.checkinOtpVisible ? (
+                                      <span className="text-green-400">OTP: {m.checkinOtp}</span>
+                                    ) : (
+                                      <span className="text-amber-400">
+                                        OTP hidden{typeof m.minutesUntilSlot === "number" ? ` (${Math.max(m.minutesUntilSlot, 0)} min left)` : ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {!m.checkinVerified ? (
+                                    <div className="mt-1 flex items-center gap-1">
+                                      <Input
+                                        value={checkinOtpInputs[m.id] || ""}
+                                        onChange={(e) => setCheckinOtpInputs((prev) => ({ ...prev, [m.id]: e.target.value.replace(/\D/g, "").slice(0, 6) }))}
+                                        placeholder="Enter OTP"
+                                        className="h-6 text-[10px] px-2"
+                                      />
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-6 text-[10px]"
+                                        onClick={() => handleVerifyCheckin(m.id)}
+                                        disabled={verifyingCheckinId === m.id}
+                                      >
+                                        {verifyingCheckinId === m.id ? <Loader2 className="w-3 h-3 animate-spin" /> : "Verify"}
+                                      </Button>
+                                    </div>
+                                  ) : m.paymentStatus !== "done" ? (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="mt-1 h-6 text-[10px]"
+                                      onClick={() => { setPaymentAmountInput(""); setPaymentDialogMemberId(m.id); }}
+                                    >
+                                      Mark Payment
+                                    </Button>
+                                  ) : null}
                                 </div>
                               ))}
                             </div>
@@ -706,11 +868,26 @@ export default function AdminDashboardPage() {
                   <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div>
                       <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Date</label>
-                      <Input
-                        type="date"
-                        value={schedDate}
-                        onChange={(e) => handleSchedDateChange(e.target.value)}
-                      />
+                      <Popover open={schedCalendarOpen} onOpenChange={setSchedCalendarOpen}>
+                        <PopoverTrigger asChild>
+                          <Button type="button" variant="outline" className="w-full justify-start text-left font-normal">
+                            <CalendarDays className="mr-2 h-4 w-4" />
+                            {schedDateValue ? format(schedDateValue, "PPP") : "Pick date"}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={schedDateValue}
+                            onSelect={(nextDate) => {
+                              if (!nextDate) return;
+                              handleSchedDateChange(format(nextDate, "yyyy-MM-dd"));
+                              setSchedCalendarOpen(false);
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
                     </div>
                     <div>
                       <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Open Time</label>
@@ -882,19 +1059,29 @@ export default function AdminDashboardPage() {
                             </TableCell>
                             <TableCell>
                               {b.status === "confirmed" && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="text-red-400 hover:text-red-300 hover:bg-red-600/10 h-7 px-2"
-                                  onClick={() => handleCancelBooking(b.id)}
-                                  disabled={cancellingId === b.id}
-                                >
-                                  {cancellingId === b.id ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
-                                  )}
-                                </Button>
+                                isCancellationLocked(b) ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-green-600/30 text-green-400 text-[10px]"
+                                    title="Cannot cancel after OTP verification and payment completion"
+                                  >
+                                    Locked
+                                  </Badge>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-red-400 hover:text-red-300 hover:bg-red-600/10 h-7 px-2"
+                                    onClick={() => handleCancelBooking(b.id)}
+                                    disabled={cancellingId === b.id}
+                                  >
+                                    {cancellingId === b.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
+                                    )}
+                                  </Button>
+                                )
                               )}
                             </TableCell>
                           </TableRow>
@@ -982,11 +1169,26 @@ export default function AdminDashboardPage() {
                     </div>
                     <div>
                       <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Date *</label>
-                      <Input
-                        type="date"
-                        value={bookForm.date}
-                        onChange={(e) => handleBookFormChange("date", e.target.value)}
-                      />
+                      <Popover open={bookDateCalendarOpen} onOpenChange={setBookDateCalendarOpen}>
+                        <PopoverTrigger asChild>
+                          <Button type="button" variant="outline" className="w-full justify-start text-left font-normal">
+                            <CalendarDays className="mr-2 h-4 w-4" />
+                            {bookDateValue ? format(bookDateValue, "PPP") : "Pick booking date"}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={bookDateValue}
+                            onSelect={(nextDate) => {
+                              if (!nextDate) return;
+                              handleBookFormChange("date", format(nextDate, "yyyy-MM-dd"));
+                              setBookDateCalendarOpen(false);
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
                     </div>
                   </div>
 
@@ -1087,6 +1289,64 @@ export default function AdminDashboardPage() {
           </>
         ) : null}
       </main>
+
+      {/* Payment confirmation dialog */}
+      {paymentDialogMemberId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-background border border-border/60 rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4">
+            <div className="font-racing text-lg uppercase tracking-widest text-foreground">Payment Received?</div>
+            <div className="text-sm text-muted-foreground">OTP has been verified. Enter the amount paid and select payment mode.</div>
+            <div>
+              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">Amount Paid (₹)</label>
+              <Input
+                type="number"
+                min="0"
+                placeholder="e.g. 999"
+                value={paymentAmountInput}
+                onChange={(e) => setPaymentAmountInput(e.target.value)}
+                className="text-foreground"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">Payment Mode</label>
+              <div className="flex gap-2">
+                {(["cash", "card", "upi"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setPaymentModeInput(m)}
+                    className={`flex-1 rounded-md border px-3 py-2 text-sm font-racing uppercase tracking-widest transition-all ${
+                      paymentModeInput === m
+                        ? "border-primary bg-primary/15 text-primary"
+                        : "border-border/40 text-muted-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    {m === "cash" ? "💵 Cash" : m === "card" ? "💳 Card" : "📱 UPI"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                onClick={handleMarkPayment}
+                disabled={markingPaymentId !== null}
+              >
+                {markingPaymentId !== null ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Confirm Payment
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setPaymentDialogMemberId(null)}
+                disabled={markingPaymentId !== null}
+              >
+                Skip
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

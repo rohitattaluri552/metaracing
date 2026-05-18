@@ -7,6 +7,7 @@ export const users = sqliteTable("users", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   phone: text("phone").default(""),
+  experienceLevel: text("experience_level").notNull().default("rookie"),
   password: text("password").notNull(),
   createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
 });
@@ -30,6 +31,10 @@ export const bookings = sqliteTable("bookings", {
   guests: text("guests").notNull(),
   message: text("message").notNull().default(""),
   status: text("status").notNull().default("confirmed"),
+  checkinVerified: integer("checkin_verified", { mode: "boolean" }).notNull().default(false),
+  paymentStatus: text("payment_status").notNull().default("pending"),
+  paymentAmount: integer("payment_amount").default(0),
+  paymentMode: text("payment_mode").default(""),
   customerId: integer("customer_id"),
   createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
 });

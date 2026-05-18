@@ -5,12 +5,14 @@ export interface Customer {
   name: string;
   email: string;
   phone: string;
+  experienceLevel: string;
 }
 
 interface AuthContextType {
   customer: Customer | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, phone: string, password: string) => Promise<void>;
+  setAuthenticatedCustomer: (customer: Customer, token?: string) => void;
   logout: () => void;
   isLoading: boolean;
 }
@@ -44,6 +46,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     setCustomer(data.customer);
     localStorage.setItem("mr_customer", JSON.stringify(data.customer));
+    if (typeof data.token === "string") {
+      localStorage.setItem("mr_customer_token", data.token);
+    }
   };
 
   const register = async (name: string, email: string, phone: string, password: string) => {
@@ -59,15 +64,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     setCustomer(data.customer);
     localStorage.setItem("mr_customer", JSON.stringify(data.customer));
+    if (typeof data.token === "string") {
+      localStorage.setItem("mr_customer_token", data.token);
+    }
+  };
+
+  const setAuthenticatedCustomer = (nextCustomer: Customer, token?: string) => {
+    setCustomer(nextCustomer);
+    localStorage.setItem("mr_customer", JSON.stringify(nextCustomer));
+    if (typeof token === "string" && token) {
+      localStorage.setItem("mr_customer_token", token);
+    }
   };
 
   const logout = () => {
     setCustomer(null);
     localStorage.removeItem("mr_customer");
+    localStorage.removeItem("mr_customer_token");
   };
 
   return (
-    <AuthContext.Provider value={{ customer, login, register, logout, isLoading }}>
+    <AuthContext.Provider value={{ customer, login, register, setAuthenticatedCustomer, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

@@ -28,6 +28,7 @@ sqlite.exec(`
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     phone TEXT DEFAULT '',
+    experience_level TEXT NOT NULL DEFAULT 'rookie',
     password TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -43,6 +44,7 @@ sqlite.exec(`
     guests TEXT NOT NULL,
     message TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'confirmed',
+    checkin_verified INTEGER NOT NULL DEFAULT 0,
     customer_id INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -66,19 +68,29 @@ function addColumnIfMissing(table: string, column: string, definition: string) {
   }
 }
 addColumnIfMissing("bookings", "status", "TEXT NOT NULL DEFAULT 'confirmed'");
+addColumnIfMissing("bookings", "checkin_verified", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("bookings", "payment_status", "TEXT NOT NULL DEFAULT 'pending'");
+addColumnIfMissing("bookings", "payment_amount", "INTEGER DEFAULT 0");
+addColumnIfMissing("bookings", "payment_mode", "TEXT DEFAULT ''");
 addColumnIfMissing("bookings", "customer_id", "INTEGER");
 addColumnIfMissing("bookings", "time_slot", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("users", "phone", "TEXT DEFAULT ''");
+addColumnIfMissing("users", "experience_level", "TEXT NOT NULL DEFAULT 'rookie'");
 
 export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUserProfile(id: number, data: { name: string; email: string; phone: string; experienceLevel: string }): Promise<User | undefined>;
+  syncBookingIdentityForCustomer(customerId: number, data: { name: string; email: string; phone: string }): Promise<void>;
   createBooking(booking: InsertBooking): Promise<Booking>;
   getBookings(): Promise<Booking[]>;
   getBookingsByCustomer(customerId: number): Promise<Booking[]>;
   getBookingById(id: number): Promise<Booking | undefined>;
   cancelBooking(id: number): Promise<Booking | undefined>;
+  expireBooking(id: number): Promise<Booking | undefined>;
+  markCheckinVerified(id: number): Promise<Booking | undefined>;
+  markPaymentDone(id: number, amount: number, mode: string): Promise<Booking | undefined>;
   // Admin
   getTotalBookings(): Promise<number>;
   getTodayBookings(): Promise<Booking[]>;
@@ -89,6 +101,7 @@ export interface IStorage {
   getSlotAvailability(date: string): Promise<{ slot: string; bookedGuests: number }[]>;
   // Schedule overrides
   getScheduleOverride(date: string): Promise<ScheduleOverride | undefined>;
+  getClosedScheduleDates(): Promise<string[]>;
   upsertScheduleOverride(data: InsertScheduleOverride): Promise<ScheduleOverride>;
   deleteScheduleOverride(date: string): Promise<void>;
   // Search
@@ -111,6 +124,24 @@ export class SqliteStorage implements IStorage {
     return results[0];
   }
 
+  async updateUserProfile(id: number, data: { name: string; email: string; phone: string; experienceLevel: string }): Promise<User | undefined> {
+    const results = db
+      .update(users)
+      .set({ name: data.name, email: data.email, phone: data.phone, experienceLevel: data.experienceLevel })
+      .where(eq(users.id, id))
+      .returning()
+      .all();
+    return results[0];
+  }
+
+  async syncBookingIdentityForCustomer(customerId: number, data: { name: string; email: string; phone: string }): Promise<void> {
+    db
+      .update(bookings)
+      .set({ name: data.name, email: data.email, phone: data.phone })
+      .where(eq(bookings.customerId, customerId))
+      .run();
+  }
+
   async createBooking(booking: InsertBooking): Promise<Booking> {
     const results = db.insert(bookings).values(booking).returning().all();
     return results[0];
@@ -121,7 +152,11 @@ export class SqliteStorage implements IStorage {
   }
 
   async getBookingsByCustomer(customerId: number): Promise<Booking[]> {
-    return db.select().from(bookings).where(eq(bookings.customerId, customerId)).all();
+    return db
+      .select()
+      .from(bookings)
+      .where(and(eq(bookings.customerId, customerId), eq(bookings.status, "confirmed")))
+      .all();
   }
 
   async getBookingById(id: number): Promise<Booking | undefined> {
@@ -131,6 +166,31 @@ export class SqliteStorage implements IStorage {
 
   async cancelBooking(id: number): Promise<Booking | undefined> {
     const results = db.update(bookings).set({ status: "cancelled" }).where(eq(bookings.id, id)).returning().all();
+    return results[0];
+  }
+
+  async expireBooking(id: number): Promise<Booking | undefined> {
+    const results = db.update(bookings).set({ status: "expired" }).where(eq(bookings.id, id)).returning().all();
+    return results[0];
+  }
+
+  async markCheckinVerified(id: number): Promise<Booking | undefined> {
+    const results = db
+      .update(bookings)
+      .set({ checkinVerified: true })
+      .where(eq(bookings.id, id))
+      .returning()
+      .all();
+    return results[0];
+  }
+
+  async markPaymentDone(id: number, amount: number, mode: string): Promise<Booking | undefined> {
+    const results = db
+      .update(bookings)
+      .set({ paymentStatus: "done", paymentAmount: amount, paymentMode: mode })
+      .where(eq(bookings.id, id))
+      .returning()
+      .all();
     return results[0];
   }
 
@@ -182,6 +242,15 @@ export class SqliteStorage implements IStorage {
   async getScheduleOverride(date: string): Promise<ScheduleOverride | undefined> {
     const results = db.select().from(scheduleOverrides).where(eq(scheduleOverrides.date, date)).all();
     return results[0];
+  }
+
+  async getClosedScheduleDates(): Promise<string[]> {
+    return db
+      .select({ date: scheduleOverrides.date })
+      .from(scheduleOverrides)
+      .where(eq(scheduleOverrides.closed, true))
+      .all()
+      .map((row) => row.date);
   }
 
   async upsertScheduleOverride(data: InsertScheduleOverride): Promise<ScheduleOverride> {
