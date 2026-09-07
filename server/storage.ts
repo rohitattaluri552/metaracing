@@ -2,13 +2,26 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, and, gte, sql, like, or } from "drizzle-orm";
 import {
-  users, bookings, scheduleOverrides,
-  type User, type InsertUser,
-  type Booking, type InsertBooking,
-  type ScheduleOverride, type InsertScheduleOverride,
+  users,
+  bookings,
+  scheduleOverrides,
+  type User,
+  type InsertUser,
+  type Booking,
+  type InsertBooking,
+  type ScheduleOverride,
+  type InsertScheduleOverride,
 } from "@shared/schema";
 import path from "path";
 import fs from "fs";
+
+import {
+  insertResourceSchema,
+  resources,
+  type Resource,
+  type InsertResource,
+} from "@shared/schema";
+
 
 // Ensure data directory exists
 const dataDir = path.resolve("data");
@@ -56,6 +69,15 @@ sqlite.exec(`
     close_time TEXT DEFAULT '21:00',
     max_guests_per_slot INTEGER DEFAULT 5,
     blocked_slots TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL, -- sim | vr | rc
+    status TEXT NOT NULL DEFAULT 'active', -- active | maintenance | inactive
+    max_people INTEGER NOT NULL DEFAULT 1,
+    display_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
@@ -106,6 +128,13 @@ export interface IStorage {
   deleteScheduleOverride(date: string): Promise<void>;
   // Search
   searchBookings(query: string, status?: string, page?: number, perPage?: number): Promise<{ bookings: Booking[]; total: number }>;
+
+  // Resources
+  getResources(): Promise<Resource[]>;
+  getResourceById(id: number): Promise<Resource | undefined>;
+  createResource(resource: InsertResource): Promise<Resource>;
+  updateResource(id: number, data: { name: string; type: string; status: string; maxPeople: number; displayOrder: number }): Promise<Resource | undefined>;
+  deleteResource(id: number): Promise<void>;
 }
 
 export class SqliteStorage implements IStorage {
@@ -284,8 +313,58 @@ export class SqliteStorage implements IStorage {
     const total = allResults.length;
     const start = (page - 1) * perPage;
     const paginated = allResults.reverse().slice(start, start + perPage);
-    return { bookings: paginated, total };
+    return { bookings: paginated, total };}
+
+  async getResources(): Promise<Resource[]> {
+    return db
+      .select()
+      .from(resources)
+      .orderBy(resources.displayOrder)
+      .all();
   }
+
+  async getResourceById(id: number): Promise<Resource | undefined> {
+    const results = db
+      .select()
+      .from(resources)
+      .where(eq(resources.id, id))
+      .all();
+
+    return results[0];
+  }
+
+  async createResource(resource: InsertResource): Promise<Resource> {
+    const results = db
+      .insert(resources)
+      .values(resource)
+      .returning()
+      .all();
+
+    return results[0];
+  }
+
+  async updateResource(
+    id: number,
+    updates: Partial<InsertResource>,
+  ): Promise<Resource | undefined> {
+    const results = db
+      .update(resources)
+      .set(updates)
+      .where(eq(resources.id, id))
+      .returning()
+      .all();
+
+    return results[0];
+  }
+
+  async deleteResource(id: number): Promise<void> {
+    db
+      .delete(resources)
+      .where(eq(resources.id, id))
+      .run();
+  }
+
+
 }
 
 export const storage = new SqliteStorage();
