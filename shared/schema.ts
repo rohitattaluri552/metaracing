@@ -19,6 +19,26 @@ export const insertUserSchema = createInsertSchema(users).omit({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+
+export const resources = sqliteTable("resources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  type: text("type").notNull(), // sim | vr | rc
+  status: text("status").notNull().default("active"), // active | maintenance | inactive
+  maxPeople: integer("max_people").notNull().default(1),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const insertResourceSchema = createInsertSchema(resources).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertResource = z.infer<typeof insertResourceSchema>;
+export type Resource = typeof resources.$inferSelect;
+
 export const bookings = sqliteTable("bookings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
@@ -36,6 +56,10 @@ export const bookings = sqliteTable("bookings", {
   paymentAmount: integer("payment_amount").default(0),
   paymentMode: text("payment_mode").default(""),
   customerId: integer("customer_id"),
+  resourceId: integer("resource_id"),
+  startTime: text("start_time"),
+  endTime: text("end_time"),
+  partySize: integer("party_size").notNull().default(1),
   createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
 });
 
