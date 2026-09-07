@@ -1,4 +1,4 @@
-import type { Express, Request, Response, NextFunction } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import bcrypt from "bcryptjs";
@@ -12,7 +12,11 @@ const MAX_GUESTS_PER_SLOT = 5;
 const PUBLIC_SLOT_LOCKS_AFTER_FIRST_BOOKING = true;
 const SLOT_INTERVAL_MINUTES = 30;
 const MIN_BOOKING_BLOCKS = 1;
-const JWT_SECRET = process.env.JWT_SECRET || "metaracing-dev-secret-change";
+const JWT_SECRET: string = process.env.JWT_SECRET ?? "";
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is required");
+}
+
 const JWT_EXPIRES_IN = "12h";
 
 const RIGS = [
@@ -173,8 +177,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
 
   const requireAuth = (role?: AuthRole) => {
-    return (req: Request, res: Response, next: NextFunction) => {
-      const token = extractBearerToken(req);
+   return (req: Request, res: Response, next: NextFunction) => {
+        const token = extractBearerToken(req);
       if (!token) {
         return res.status(401).json({ error: "Unauthorized" });
       }
@@ -546,14 +550,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/bookings", async (req, res) => {
-    try {
-      const bookings = await storage.getBookings();
-      return res.json(bookings);
-    } catch (err) {
-      return res.status(500).json({ error: "Failed to fetch bookings" });
-    }
-  });
+    app.get("/api/bookings", requireAuth("admin"), async (req, res) => {
+      try {
+        const bookings = await storage.getBookings();
+        return res.json(bookings);
+      } catch (err) {
+        return res.status(500).json({ error: "Failed to fetch bookings" });
+      }
+    });
 
   // --- Slot availability ---
   app.get("/api/slots", async (req, res) => {
@@ -698,8 +702,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // --- Admin ---
-  const ADMIN_EMAIL = "admin@metaracing.in";
-  const ADMIN_PASSWORD = "MetaRacing@2026";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  throw new Error("Admin credentials are required");
+}
 
   // Plan price map (hourly rate in INR)
   const PLAN_PRICES: Record<string, number> = {

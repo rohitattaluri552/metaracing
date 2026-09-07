@@ -4,7 +4,7 @@ import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { setupMqtt } from "./mqtt";
+
 
 const app = express();
 const httpServer = createServer(app);
@@ -111,9 +111,7 @@ app.use((req, res, next) => {
     () => {
       log(`serving on port ${port}`);
 
-      // Connect to MQTT broker
-      const mqttBroker = process.env.MQTT_BROKER || "mqtt://192.168.0.193:1883";
-      setupMqtt(mqttBroker);
+
     },
   );
 })();
