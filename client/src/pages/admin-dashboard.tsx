@@ -35,6 +35,7 @@ import {
   Search,
   Ban,
   Settings,
+  UserRound,
   XCircle,
   CalendarDays,
 } from "lucide-react";
@@ -519,6 +520,22 @@ export default function AdminDashboardPage() {
             </span>
           </div>
           <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/resource-availability")}>
+              <CalendarCheck className="w-4 h-4 mr-1" />
+              Resource Availability
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/resources")}>
+              <Settings className="w-4 h-4 mr-1" />
+              Resources
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/customers")}>
+              <UserRound className="w-4 h-4 mr-1" />
+              Customers
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/pricing")}>
+              <IndianRupee className="w-4 h-4 mr-1" />
+              Pricing & Offers
+            </Button>
             <Button variant="ghost" size="sm" onClick={fetchStats} disabled={loading}>
               <RefreshCw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
               Refresh

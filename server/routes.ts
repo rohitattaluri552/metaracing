@@ -8,6 +8,10 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_EXPERIENCE_LEVELS = ["rookie", "veteran"];
 const VALID_EXPERIENCES = ["sim", "fpv", "both"];
 const VALID_PLANS = ["starter", "racer", "squad", "tournament", "champion"];
+const VALID_RESOURCE_TYPES = ["sim", "vr", "rc"];
+const VALID_RESOURCE_STATUSES = ["active", "maintenance", "inactive"];
+const VALID_PRICING_CATEGORIES = ["single_screen", "triple_screen"];
+const VALID_DISCOUNT_TYPES = ["percentage", "fixed"];
 const MAX_GUESTS_PER_SLOT = 5;
 const PUBLIC_SLOT_LOCKS_AFTER_FIRST_BOOKING = true;
 const SLOT_INTERVAL_MINUTES = 30;
@@ -90,6 +94,19 @@ function parseTimeToMinutes(time: string): number | null {
   return h * 60 + m;
 }
 
+function isValidBookingDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [year, month, day] = date.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
+
+function isValidResourceBookingTime(time: string): boolean {
+  return /^\d{2}:\d{2}$/.test(time) && parseTimeToMinutes(time) !== null;
+}
+
 function minutesToTime(totalMinutes: number): string {
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
@@ -139,6 +156,64 @@ function isDateTodayOrFuture(dateStr: string): boolean {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return selected >= today;
+}
+
+function parseOfferInput(input: any): { value: any } | { error: string } {
+  const name = typeof input?.name === "string" ? input.name.trim() : "";
+  const discountType = typeof input?.discountType === "string" ? input.discountType.trim().toLowerCase() : "";
+  const discountValue = Number(input?.discountValue);
+  const experienceType = typeof input?.experienceType === "string" ? input.experienceType.trim().toLowerCase() : "";
+  const resourceCategory = input?.resourceCategory ? String(input.resourceCategory).trim().toLowerCase() : null;
+  const active = input?.active === undefined ? true : input.active;
+  const startDate = input?.startDate ? String(input.startDate).trim() : null;
+  const endDate = input?.endDate ? String(input.endDate).trim() : null;
+  const marketingText = typeof input?.marketingText === "string" ? input.marketingText.trim() : "";
+
+  if (!name) return { error: "Offer name is required" };
+  if (!VALID_DISCOUNT_TYPES.includes(discountType)) {
+    return { error: "Discount type must be percentage or fixed" };
+  }
+  if (!Number.isInteger(discountValue) || discountValue <= 0
+    || (discountType === "percentage" && discountValue > 100)) {
+    return { error: "Discount value must be a positive amount (percentage max 100)" };
+  }
+  if (!VALID_RESOURCE_TYPES.includes(experienceType)) {
+    return { error: "Experience type must be sim, vr, or rc" };
+  }
+  if (resourceCategory !== null && !VALID_PRICING_CATEGORIES.includes(resourceCategory)) {
+    return { error: "Resource category must be single_screen or triple_screen" };
+  }
+  if (active !== true && active !== false) return { error: "Active must be true or false" };
+  if (startDate && !isValidBookingDate(startDate)) return { error: "Start date must be YYYY-MM-DD" };
+  if (endDate && !isValidBookingDate(endDate)) return { error: "End date must be YYYY-MM-DD" };
+  if (startDate && endDate && startDate > endDate) return { error: "Start date must be before end date" };
+
+  return {
+    value: {
+      name,
+      discountType,
+      discountValue,
+      experienceType,
+      resourceCategory,
+      active,
+      startDate,
+      endDate,
+      marketingText,
+    },
+  };
+}
+
+async function validateResourceSchedule(date: string, startMinutes: number, endMinutes: number): Promise<string | null> {
+  const override = await storage.getScheduleOverride(date);
+  if (override?.closed) return "The selected date is closed";
+
+  const openMinutes = parseTimeToMinutes(override?.openTime || "09:00");
+  const closeMinutes = parseTimeToMinutes(override?.closeTime || "21:00");
+  if (openMinutes === null || closeMinutes === null || openMinutes >= closeMinutes
+    || startMinutes < openMinutes || endMinutes > closeMinutes) {
+    return "The requested time is outside venue operating hours";
+  }
+  return null;
 }
 
 function parseSlotStart(dateStr: string, timeSlot: string): Date | null {
@@ -401,6 +476,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/bookings", async (req, res) => {
     try {
       const { experience, plan, date, timeSlot, timeSlots, guests, message, customerId, otpToken, paymentMethod } = req.body;
+      const resourceType = typeof req.body.resourceType === "string" ? req.body.resourceType.trim().toLowerCase() : "";
+      const startTime = typeof req.body.startTime === "string" ? req.body.startTime.trim() : "";
+      const endTime = typeof req.body.endTime === "string" ? req.body.endTime.trim() : "";
+      const requestedResourceId = req.body.resourceId === undefined ? undefined : Number(req.body.resourceId);
+      const hasResourceBookingFields = ["resourceType", "startTime", "endTime", "partySize"]
+        .some((field) => req.body[field] !== undefined);
       let name = typeof req.body.name === "string" ? req.body.name.trim() : "";
       const rawPhone = typeof req.body.phone === "string" ? req.body.phone : "";
       let phone = cleanPhone(rawPhone);
@@ -452,6 +533,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (paymentMethod && !["pay_at_venue", "qr"].includes(paymentMethod)) {
         return res.status(400).json({ error: "Payment method must be pay_at_venue or qr" });
       }
+
+      if (hasResourceBookingFields) {
+        const partySize = Number(req.body.partySize);
+        const startMinutes = parseTimeToMinutes(startTime);
+        const endMinutes = parseTimeToMinutes(endTime);
+
+        if (!resourceType || !startTime || !endTime || req.body.partySize === undefined) {
+          return res.status(400).json({ error: "resourceType, startTime, endTime, and partySize are required" });
+        }
+        if (!VALID_RESOURCE_TYPES.includes(resourceType)) {
+          return res.status(400).json({ error: "Resource type must be sim, vr, or rc" });
+        }
+        if (!isValidBookingDate(date) || !isDateTodayOrFuture(date)) {
+          return res.status(400).json({ error: "Date must be valid and today or in the future" });
+        }
+        if (!isValidResourceBookingTime(startTime) || !isValidResourceBookingTime(endTime)
+          || startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+          return res.status(400).json({ error: "startTime and endTime must be HH:MM values with startTime before endTime" });
+        }
+        const scheduleError = await validateResourceSchedule(date, startMinutes, endMinutes);
+        if (scheduleError) {
+          return res.status(400).json({ error: scheduleError });
+        }
+        if (!Number.isInteger(partySize) || partySize < 1) {
+          return res.status(400).json({ error: "partySize must be an integer of at least 1" });
+        }
+        if (req.body.resourceId !== undefined
+          && (!Number.isInteger(requestedResourceId) || (requestedResourceId as number) < 1)) {
+          return res.status(400).json({ error: "resourceId must be a valid resource ID" });
+        }
+        if (requestedResourceId !== undefined) {
+          const requestedResource = await storage.getResourceById(requestedResourceId);
+          if (!requestedResource) {
+            return res.status(400).json({ error: "resourceId does not identify an existing resource" });
+          }
+          if (requestedResource.type !== resourceType) {
+            return res.status(400).json({ error: "resourceId does not match resourceType" });
+          }
+        }
+
+        const booking = await storage.createResourceBooking(resourceType, {
+          name,
+          email,
+          phone,
+          // These legacy fields remain populated for compatibility with existing
+          // booking displays and check-in behavior; availability does not use them.
+          experience: typeof experience === "string" && experience.trim() ? experience : resourceType,
+          plan: typeof plan === "string" && plan.trim() ? plan : "resource",
+          date,
+          timeSlot: startTime,
+          guests: String(partySize),
+          message: message || "Pay at Venue",
+          status: "confirmed",
+          customerId: authenticatedCustomer ? authenticatedCustomer.id : null,
+          startTime,
+          endTime,
+          partySize,
+        }, requestedResourceId);
+
+        if (!booking) {
+          return res.status(409).json({ error: "No matching resource is available for this time" });
+        }
+        if (typeof otpToken === "string") {
+          verifiedOtpTokens.delete(otpToken);
+        }
+        return res.status(201).json(booking);
+      }
+
       if (!VALID_EXPERIENCES.includes(experience)) {
         return res.status(400).json({ error: "Invalid experience. Must be: sim, fpv, or both" });
       }
@@ -558,6 +707,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(500).json({ error: "Failed to fetch bookings" });
       }
     });
+
+  // --- Resource availability ---
+  app.get("/api/resources/available", async (req, res) => {
+    try {
+      const type = typeof req.query.type === "string" ? req.query.type.trim().toLowerCase() : "";
+      const date = typeof req.query.date === "string" ? req.query.date.trim() : "";
+      const startTime = typeof req.query.startTime === "string" ? req.query.startTime.trim() : "";
+      const endTime = typeof req.query.endTime === "string" ? req.query.endTime.trim() : "";
+      const partySize = typeof req.query.partySize === "string" ? Number(req.query.partySize) : Number.NaN;
+      const startMinutes = parseTimeToMinutes(startTime);
+      const endMinutes = parseTimeToMinutes(endTime);
+
+      if (!VALID_RESOURCE_TYPES.includes(type)) {
+        return res.status(400).json({ error: "Resource type must be sim, vr, or rc" });
+      }
+      if (!isValidBookingDate(date) || !isDateTodayOrFuture(date)) {
+        return res.status(400).json({ error: "Date must be valid and today or in the future" });
+      }
+      if (!isValidResourceBookingTime(startTime) || !isValidResourceBookingTime(endTime)
+        || startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+        return res.status(400).json({ error: "startTime and endTime must be valid HH:MM values with startTime before endTime" });
+      }
+      const scheduleError = await validateResourceSchedule(date, startMinutes, endMinutes);
+      if (scheduleError) {
+        return res.status(400).json({ error: scheduleError });
+      }
+      if (!Number.isInteger(partySize) || partySize < 1) {
+        return res.status(400).json({ error: "partySize must be an integer of at least 1" });
+      }
+
+      const resources = await storage.getAvailableResources(type, date, startTime, endTime, partySize);
+      return res.json({ resources });
+    } catch (err) {
+      console.error("Resource availability error:", err);
+      return res.status(500).json({ error: "Failed to fetch available resources" });
+    }
+  });
 
   // --- Slot availability ---
   app.get("/api/slots", async (req, res) => {
@@ -701,6 +887,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // --- Public active pricing and offers ---
+  app.get("/api/pricing", async (_req, res) => {
+    try {
+      const [pricing, offers] = await Promise.all([
+        storage.getPricing(true),
+        storage.getOffers(true),
+      ]);
+      return res.json({ pricing, offers });
+    } catch (err) {
+      console.error("Pricing read error:", err);
+      return res.status(500).json({ error: "Failed to fetch pricing" });
+    }
+  });
+
   // --- Admin ---
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
@@ -737,6 +937,192 @@ if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
       return res.json({ admin: { email: ADMIN_EMAIL, role: "admin" }, token });
     } catch (err) {
       return res.status(500).json({ error: "Admin login failed" });
+    }
+  });
+
+  app.get("/api/admin/resource-availability", requireAuth("admin"), async (req, res) => {
+    try {
+      const date = typeof req.query.date === "string" ? req.query.date.trim() : "";
+      if (!isValidBookingDate(date)) {
+        return res.status(400).json({ error: "Valid date required (YYYY-MM-DD)" });
+      }
+
+      const [resources, bookings] = await Promise.all([
+        storage.getResources(),
+        storage.getBookings(),
+      ]);
+      const resourceBookings = bookings
+        .filter((booking) => booking.date === date && booking.status === "confirmed" && booking.resourceId !== null)
+        .map((booking) => ({
+          id: booking.id,
+          resourceId: booking.resourceId,
+          customerName: booking.name,
+          partySize: booking.partySize || Number(booking.guests) || 1,
+          startTime: booking.startTime || booking.timeSlot || "",
+          endTime: booking.endTime || "",
+          status: booking.status,
+        }));
+
+      return res.json({
+        date,
+        serverNow: new Date().toISOString(),
+        resources,
+        bookings: resourceBookings,
+      });
+    } catch (err) {
+      console.error("Resource availability admin error:", err);
+      return res.status(500).json({ error: "Failed to fetch resource availability" });
+    }
+  });
+
+  app.get("/api/admin/resources", requireAuth("admin"), async (_req, res) => {
+    try {
+      return res.json({ resources: await storage.getResources() });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to fetch resources" });
+    }
+  });
+
+  app.post("/api/admin/resources", requireAuth("admin"), async (req, res) => {
+    try {
+      const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+      const type = typeof req.body?.type === "string" ? req.body.type.trim().toLowerCase() : "";
+      const maxPeople = Number(req.body?.maxPeople);
+      const requestedDisplayOrder = req.body?.displayOrder === undefined ? undefined : Number(req.body.displayOrder);
+      const resources = await storage.getResources();
+      const displayOrder = requestedDisplayOrder === undefined
+        ? (resources.reduce((max, resource) => Math.max(max, resource.displayOrder), -1) + 1)
+        : requestedDisplayOrder;
+
+      if (!name) return res.status(400).json({ error: "Resource name is required" });
+      if (!VALID_RESOURCE_TYPES.includes(type)) return res.status(400).json({ error: "Resource type must be sim, vr, or rc" });
+      if (!Number.isInteger(maxPeople) || maxPeople < 1) return res.status(400).json({ error: "maxPeople must be a positive integer" });
+      if (!Number.isInteger(displayOrder) || displayOrder < 0) return res.status(400).json({ error: "displayOrder must be a non-negative integer" });
+
+      const resource = await storage.createResource({
+        name,
+        type,
+        maxPeople,
+        status: "active",
+        displayOrder,
+      });
+      return res.status(201).json(resource);
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to create resource" });
+    }
+  });
+
+  app.patch("/api/admin/resources/:id", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid resource ID" });
+      const existing = await storage.getResourceById(id);
+      if (!existing) return res.status(404).json({ error: "Resource not found" });
+
+      const name = typeof req.body?.name === "string" ? req.body.name.trim() : existing.name;
+      const type = typeof req.body?.type === "string" ? req.body.type.trim().toLowerCase() : existing.type;
+      const maxPeople = req.body?.maxPeople === undefined ? existing.maxPeople : Number(req.body.maxPeople);
+      const status = typeof req.body?.status === "string" ? req.body.status.trim().toLowerCase() : existing.status;
+      const displayOrder = req.body?.displayOrder === undefined ? existing.displayOrder : Number(req.body.displayOrder);
+
+      if (!name) return res.status(400).json({ error: "Resource name is required" });
+      if (!VALID_RESOURCE_TYPES.includes(type)) return res.status(400).json({ error: "Resource type must be sim, vr, or rc" });
+      if (!Number.isInteger(maxPeople) || maxPeople < 1) return res.status(400).json({ error: "maxPeople must be a positive integer" });
+      if (!VALID_RESOURCE_STATUSES.includes(status)) return res.status(400).json({ error: "Resource status must be active, maintenance, or inactive" });
+      if (!Number.isInteger(displayOrder) || displayOrder < 0) return res.status(400).json({ error: "displayOrder must be a non-negative integer" });
+
+      const updated = await storage.updateResource(id, { name, type, maxPeople, status, displayOrder });
+      return res.json(updated);
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to update resource" });
+    }
+  });
+
+  app.delete("/api/admin/resources/:id", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid resource ID" });
+      const resource = await storage.getResourceById(id);
+      if (!resource) return res.status(404).json({ error: "Resource not found" });
+
+      const bookings = await storage.getBookings();
+      if (bookings.some((booking) => booking.resourceId === id)) {
+        return res.status(409).json({ error: "Resource cannot be deleted because existing bookings reference it" });
+      }
+
+      await storage.deleteResource(id);
+      return res.json({ success: true });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to delete resource" });
+    }
+  });
+
+  app.get("/api/admin/pricing", requireAuth("admin"), async (_req, res) => {
+    try {
+      return res.json({ pricing: await storage.getPricing(false) });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to fetch pricing" });
+    }
+  });
+
+  app.patch("/api/admin/pricing/:id", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const price = req.body?.price === undefined ? undefined : Number(req.body.price);
+      const active = req.body?.active === undefined ? undefined : req.body.active;
+      if (!Number.isInteger(id) || id < 1) {
+        return res.status(400).json({ error: "Invalid pricing ID" });
+      }
+      if (price !== undefined && (!Number.isInteger(price) || price <= 0)) {
+        return res.status(400).json({ error: "Price must be a positive whole number" });
+      }
+      if (active !== undefined && typeof active !== "boolean") {
+        return res.status(400).json({ error: "Active must be true or false" });
+      }
+      if (price === undefined && active === undefined) {
+        return res.status(400).json({ error: "Price or active status is required" });
+      }
+      const existing = await storage.getPricingById(id);
+      if (!existing) return res.status(404).json({ error: "Pricing entry not found" });
+      const updated = await storage.updatePricing(id, { price, active });
+      return res.json(updated);
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to update pricing" });
+    }
+  });
+
+  app.get("/api/admin/offers", requireAuth("admin"), async (_req, res) => {
+    try {
+      return res.json({ offers: await storage.getOffers(false) });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to fetch offers" });
+    }
+  });
+
+  app.post("/api/admin/offers", requireAuth("admin"), async (req, res) => {
+    try {
+      const offer = parseOfferInput(req.body);
+      if ("error" in offer) return res.status(400).json({ error: offer.error });
+      return res.status(201).json(await storage.createOffer(offer.value));
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to create offer" });
+    }
+  });
+
+  app.patch("/api/admin/offers/:id", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) {
+        return res.status(400).json({ error: "Invalid offer ID" });
+      }
+      const existing = await storage.getOfferById(id);
+      if (!existing) return res.status(404).json({ error: "Offer not found" });
+      const parsed = parseOfferInput({ ...existing, ...req.body });
+      if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+      const updated = await storage.updateOffer(id, parsed.value);
+      return res.json(updated);
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to update offer" });
     }
   });
 
@@ -783,6 +1169,42 @@ if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
     } catch (err) {
       console.error("Admin stats error:", err);
       return res.status(500).json({ error: "Failed to fetch admin stats" });
+    }
+  });
+
+  app.get("/api/admin/customers", requireAuth("admin"), async (req, res) => {
+    try {
+      const search = typeof req.query.search === "string" ? req.query.search : "";
+      return res.json({ customers: await storage.getAdminCustomers(search) });
+    } catch (err) {
+      console.error("Admin customers error:", err);
+      return res.status(500).json({ error: "Failed to fetch customers" });
+    }
+  });
+
+  app.get("/api/admin/customers/:id", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid customer ID" });
+      const customer = await storage.getAdminCustomerById(id);
+      if (!customer) return res.status(404).json({ error: "Customer not found" });
+      return res.json({ customer });
+    } catch (err) {
+      console.error("Admin customer detail error:", err);
+      return res.status(500).json({ error: "Failed to fetch customer" });
+    }
+  });
+
+  app.get("/api/admin/customers/:id/bookings", requireAuth("admin"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid customer ID" });
+      const customer = await storage.getAdminCustomerById(id);
+      if (!customer) return res.status(404).json({ error: "Customer not found" });
+      return res.json({ bookings: await storage.getAdminBookingsByCustomer(id) });
+    } catch (err) {
+      console.error("Admin customer bookings error:", err);
+      return res.status(500).json({ error: "Failed to fetch customer bookings" });
     }
   });
 

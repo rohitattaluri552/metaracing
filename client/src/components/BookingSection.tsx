@@ -24,11 +24,17 @@ interface SlotInfo {
   blocked?: boolean;
 }
 
-interface RigInfo {
-  id: string;
+interface ResourceInfo {
+  id: number;
   name: string;
+  type: "sim" | "vr" | "rc";
+  status: "active" | "maintenance" | "inactive";
+  maxPeople: number;
   available: boolean;
 }
+
+type ResourceType = "sim" | "vr" | "rc";
+type BookingPlan = "starter" | "racer" | "squad" | "tournament";
 
 type Step = "verify" | "date" | "slot" | "details" | "payment" | "done";
 const SLOT_INTERVAL_MINUTES = 30;
@@ -48,10 +54,9 @@ function formatSlotLabel(time: string): string {
     const h12 = hr > 12 ? hr - 12 : hr === 0 ? 12 : hr;
     return `${h12}:00 ${ampm}`;
   };
-  const min = minute === 0 ? "00" : "30";
   const ampm = hour >= 12 ? "PM" : "AM";
   const h12 = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
-  return `${h12}:${min} ${ampm}`;
+  return `${h12}:${String(minute).padStart(2, "0")} ${ampm}`;
 }
 
 function addMinutesToTime(time: string, minutesToAdd: number): string {
@@ -60,6 +65,12 @@ function addMinutesToTime(time: string, minutesToAdd: number): string {
   const nextH = Math.floor(total / 60);
   const nextM = total % 60;
   return `${String(nextH).padStart(2, "0")}:${String(nextM).padStart(2, "0")}`;
+}
+
+function getSessionDurationMinutes(resourceType: ResourceType, plan: BookingPlan): number {
+  if (resourceType === "vr") return 15;
+  if (resourceType === "rc") return 20;
+  return plan === "starter" ? 30 : 60;
 }
 
 function isPastSlotForDate(dateStr: string, slot: string): boolean {
@@ -100,12 +111,12 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
   const [rangeStartIndex, setRangeStartIndex] = useState(0);
   const [rangeEndIndex, setRangeEndIndex] = useState(0);
 
-  const [rigsLoading, setRigsLoading] = useState(false);
-  const [rigs, setRigs] = useState<RigInfo[]>([]);
-  const [selectedRigId, setSelectedRigId] = useState("");
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resources, setResources] = useState<ResourceInfo[]>([]);
+  const [selectedResourceId, setSelectedResourceId] = useState<number | null>(null);
+  const [resourceType, setResourceType] = useState<ResourceType>("sim");
 
-  const [experience, setExperience] = useState<"sim" | "fpv" | "both">("sim");
-  const [plan, setPlan] = useState<"starter" | "racer" | "squad" | "tournament">("starter");
+  const [plan, setPlan] = useState<BookingPlan>("starter");
   const [guests, setGuests] = useState("1");
   const [message, setMessage] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"qr" | "pay_at_venue">("pay_at_venue");
@@ -123,53 +134,32 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
     const idx = visibleSlots.findIndex((s) => !s.full && !s.blocked);
     return idx >= 0 ? idx : 0;
   }, [visibleSlots]);
+  const selectedDurationMinutes = getSessionDurationMinutes(resourceType, plan);
+  const selectedSlotCount = Math.max(1, Math.ceil(selectedDurationMinutes / SLOT_INTERVAL_MINUTES));
   const selectedSlotRange = useMemo(() => {
     if (!visibleSlots.length) return [] as SlotInfo[];
     const safeStart = Math.max(firstAvailableIndex, Math.min(rangeStartIndex, visibleSlots.length - 1));
-    const safeEnd = Math.max(firstAvailableIndex, Math.min(rangeEndIndex, visibleSlots.length - 1));
-    const start = Math.min(safeStart, safeEnd);
-    const end = Math.max(safeStart, safeEnd);
-    return visibleSlots.slice(start, end + 1);
-  }, [visibleSlots, rangeStartIndex, rangeEndIndex, firstAvailableIndex]);
-  const selectedDurationMinutes = selectedSlotRange.length * SLOT_INTERVAL_MINUTES;
-  const selectedRangeIsBookable = selectedSlotRange.length > 0 && selectedSlotRange.every((slot) => !slot.full && !slot.blocked);
+    return visibleSlots.slice(safeStart, safeStart + selectedSlotCount);
+  }, [visibleSlots, rangeStartIndex, firstAvailableIndex, selectedSlotCount]);
+  const selectedRangeIsBookable = selectedSlotRange.length === selectedSlotCount
+    && selectedSlotRange.every((slot) => !slot.full && !slot.blocked);
   const selectedStartSlot = selectedRangeIsBookable ? selectedSlotRange[0]?.time || "" : "";
-  const selectedEndTime = selectedRangeIsBookable && selectedSlotRange.length
-    ? addMinutesToTime(selectedSlotRange[selectedSlotRange.length - 1].time, SLOT_INTERVAL_MINUTES)
+  const selectedEndTime = selectedRangeIsBookable && selectedStartSlot
+    ? addMinutesToTime(selectedStartSlot, selectedDurationMinutes)
     : "";
 
-  const rigCardImage = (rigName: string) =>
-    rigName.startsWith("3 Screen") ? "/images/racing-sim.png" : "/images/steering-wheel.png";
-  const selectedRig = rigs.find((r) => r.id === selectedRigId);
+  const resourceCardImage = (resource: ResourceInfo) => {
+    if (resource.type === "vr" || resource.type === "rc") return "/images/fpv-arena.png";
+    return resource.name.startsWith("Triple") ? "/images/racing-sim.png" : "/images/steering-wheel.png";
+  };
+  const selectedResource = resources.find((resource) => resource.id === selectedResourceId);
 
   const selectRangeByBox = (clickedIndex: number) => {
     const clicked = visibleSlots[clickedIndex];
     if (!clicked || clicked.full || clicked.blocked) return;
-
-    const currentStart = Math.min(rangeStartIndex, rangeEndIndex);
-    const currentEnd = Math.max(rangeStartIndex, rangeEndIndex);
-    const hasExistingRange = currentStart !== currentEnd;
-
-    if (hasExistingRange) {
-      setRangeStartIndex(clickedIndex);
-      setRangeEndIndex(clickedIndex);
-      return;
-    }
-
-    const start = Math.min(currentStart, clickedIndex);
-    const end = Math.max(currentStart, clickedIndex);
-    const nextRange = visibleSlots.slice(start, end + 1);
-    const allBookable = nextRange.every((slot) => !slot.full && !slot.blocked);
-
-    if (!allBookable) {
-      setRangeStartIndex(clickedIndex);
-      setRangeEndIndex(clickedIndex);
-      return;
-    }
-
-    setRangeStartIndex(start);
-    setRangeEndIndex(end);
-  };
+    setRangeStartIndex(clickedIndex);
+    setRangeEndIndex(clickedIndex);
+    };
 
   useEffect(() => {
     if (!loggedInMode) return;
@@ -230,8 +220,8 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
     setRangeStartIndex(0);
     setRangeEndIndex(0);
-    setRigs([]);
-    setSelectedRigId("");
+    setResources([]);
+    setSelectedResourceId(null);
 
     return () => { cancelled = true; };
   }, [date]);
@@ -253,37 +243,54 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
   }, [date, firstAvailableIndex, visibleSlots.length]);
 
   useEffect(() => {
+    if (!visibleSlots.length) return;
+    const latestValidStart = visibleSlots.length - selectedSlotCount;
+    if (rangeStartIndex > latestValidStart) {
+      const nextStart = Math.max(0, Math.min(firstAvailableIndex, latestValidStart));
+      setRangeStartIndex(nextStart);
+      setRangeEndIndex(nextStart);
+    }
+  }, [visibleSlots.length, selectedSlotCount, rangeStartIndex, firstAvailableIndex]);
+
+  useEffect(() => {
     if (paymentMethod === "qr") {
       setQrImageIndex(0);
     }
   }, [paymentMethod]);
 
   useEffect(() => {
-    if (!date || !selectedStartSlot) {
-      setRigs([]);
-      setSelectedRigId("");
+    if (!date || !selectedStartSlot || !selectedEndTime) {
+      setResources([]);
+      setSelectedResourceId(null);
       return;
     }
 
     let cancelled = false;
-    setRigsLoading(true);
-    fetch(`/api/rigs?date=${date}&timeSlot=${selectedStartSlot}`)
+    setResourcesLoading(true);
+    setSelectedResourceId(null);
+    const params = new URLSearchParams({
+      type: resourceType,
+      date,
+      startTime: selectedStartSlot,
+      endTime: selectedEndTime,
+      partySize: String(Number(guests)),
+    });
+    fetch(`/api/resources/available?${params.toString()}`)
       .then((res) => res.json())
       .then((data) => {
         if (!cancelled) {
-          setRigs(data.rigs || []);
-          setSelectedRigId("");
+          setResources((data.resources || []).map((resource: ResourceInfo) => ({ ...resource, available: resource.available ?? true })));
         }
       })
       .catch(() => {
-        if (!cancelled) setRigs([]);
+        if (!cancelled) setResources([]);
       })
       .finally(() => {
-        if (!cancelled) setRigsLoading(false);
+        if (!cancelled) setResourcesLoading(false);
       });
 
     return () => { cancelled = true; };
-  }, [date, selectedStartSlot]);
+  }, [date, selectedStartSlot, selectedEndTime, resourceType, plan, guests]);
 
   const sendOtp = async () => {
     if (!name.trim() || !phone.trim()) {
@@ -354,22 +361,27 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
       toast({ title: "Unavailable range", description: "Selected range includes booked/unavailable slots", variant: "destructive" });
       return;
     }
-    if (!selectedRig) {
-      toast({ title: "Select a rig", description: "Please select one available rig", variant: "destructive" });
+    if (!selectedResource) {
+      toast({ title: "Select a resource", description: "Please select one available resource", variant: "destructive" });
       return;
     }
 
     setSubmitting(true);
     try {
       const paymentLabel = paymentMethod === "qr" ? "QR" : "Pay at Venue";
-      const composedMessage = `${message?.trim() || paymentLabel}\nRig: ${selectedRig.name}\nPayment Method: ${paymentLabel}`;
+      const composedMessage = `${message?.trim() || paymentLabel}\nResource: ${selectedResource.name}\nPayment Method: ${paymentLabel}`;
       await apiRequest("POST", "/api/bookings", {
         name: name.trim(),
         phone: phone.trim(),
         email: customer?.email,
-        experience,
+        resourceType,
+        resourceId: selectedResource.id,
+        experience: resourceType,
         plan,
         date,
+        startTime: selectedStartSlot,
+        endTime: selectedEndTime,
+        partySize: Number(guests),
         timeSlots: selectedSlotRange.map((slot) => slot.time),
         guests,
         message: composedMessage,
@@ -397,9 +409,9 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
     setSlots([]);
     setRangeStartIndex(0);
     setRangeEndIndex(0);
-    setRigs([]);
-    setSelectedRigId("");
-    setExperience("sim");
+    setResources([]);
+    setSelectedResourceId(null);
+    setResourceType("sim");
     setPlan("starter");
     setGuests("1");
     setMessage("");
@@ -538,11 +550,11 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                   {step === "slot" && (
                     <div className="space-y-4">
                       <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-3 text-sm text-muted-foreground">
-                        <div className="font-racing text-xs uppercase tracking-widest text-foreground mb-2">How To Select Time Slots</div>
-                        <div>1. First, click your starting time slot.</div>
-                        <div>2. Then, click your ending time slot.</div>
-                        <div>3. We will automatically select the continuous slots between start and end.</div>
-                        <div>4. Click any single available slot again to reset and choose a new range.</div>
+                        <div className="font-racing text-xs uppercase tracking-widest text-foreground mb-2">How To Select A Session</div>
+                        <div>1. Choose a starting time slot.</div>
+                        <div>2. The session duration follows the selected resource type and plan.</div>
+                        <div>3. We automatically calculate the exact ending time.</div>
+                        <div>4. Choose another start time to reset the session.</div>
                       </div>
                       {slotsLoading ? (
                         <div className="flex items-center gap-2 py-2">
@@ -580,8 +592,8 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
                               <div className="flex gap-2 overflow-x-auto pb-1">
                                 {visibleSlots.map((s, idx) => {
-                                  const start = Math.min(rangeStartIndex, rangeEndIndex);
-                                  const end = Math.max(rangeStartIndex, rangeEndIndex);
+                                  const start = rangeStartIndex;
+                                  const end = rangeStartIndex + selectedSlotCount - 1;
                                   const inRange = idx >= start && idx <= end;
                                   const unavailable = s.full || s.blocked;
                                   return (
@@ -609,37 +621,49 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
                       {selectedStartSlot ? (
                         <div className="space-y-2">
-                          <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Available Rigs</div>
-                          {rigsLoading ? (
+                          <div>
+                            <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Resource Type</label>
+                            <Select value={resourceType} onValueChange={(value) => setResourceType(value as ResourceType)}>
+                              <SelectTrigger data-testid="select-resource-type"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="sim">SIM Racing</SelectItem>
+                                <SelectItem value="vr">VR Experience</SelectItem>
+                                <SelectItem value="rc">RC Racing</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Available Resources</div>
+                          {resourcesLoading ? (
                             <div className="flex items-center gap-2 py-2">
                               <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                              <span className="text-sm text-muted-foreground">Loading rigs...</span>
+                              <span className="text-sm text-muted-foreground">Loading resources...</span>
                             </div>
                           ) : (
                             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                              {rigs.map((r) => (
+                              {resources.map((resource) => (
                                 <button
-                                  key={r.id}
+                                  key={resource.id}
                                   type="button"
-                                  disabled={!r.available}
-                                  onClick={() => setSelectedRigId(r.id)}
+                                  disabled={!resource.available}
+                                  onClick={() => setSelectedResourceId(resource.id)}
                                   className={`rounded-md border overflow-hidden text-sm text-left transition-all ${
-                                    !r.available
+                                    !resource.available
                                       ? "border-red-600/40 bg-red-600/10 text-red-300 opacity-70 cursor-not-allowed"
-                                      : selectedRigId === r.id
+                                      : selectedResourceId === resource.id
                                         ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
                                         : "border-green-600/40 bg-green-600/10 text-green-300 hover:border-primary/60"
                                   }`}
-                                  data-testid={`rig-${r.id}`}
+                                  data-testid={`resource-${resource.id}`}
                                 >
                                   <img
-                                    src={rigCardImage(r.name)}
-                                    alt={r.name}
+                                    src={resourceCardImage(resource)}
+                                    alt={resource.name}
                                     className="h-28 w-full object-cover"
                                   />
                                   <div className="px-3 py-3">
-                                    <div className="font-medium">{r.name}</div>
-                                    <div className="text-xs mt-1">{r.available ? "Available" : "Booked"}</div>
+                                    <div className="font-medium">{resource.name}</div>
+                                    <div className="text-xs mt-1">{resource.available ? "Available" : "Unavailable"}</div>
+                                    <div className="text-xs mt-1">Up to {resource.maxPeople} people</div>
                                   </div>
                                 </button>
                               ))}
@@ -650,7 +674,7 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
                       <div className="flex gap-2">
                         <Button type="button" variant="outline" onClick={() => setStep("date")}>Back</Button>
-                        <Button type="button" onClick={() => setStep("details")} disabled={!selectedStartSlot || !selectedRigId || !selectedRangeIsBookable}>Continue</Button>
+                        <Button type="button" onClick={() => setStep("details")} disabled={!selectedStartSlot || !selectedResourceId || !selectedRangeIsBookable}>Continue</Button>
                       </div>
                     </div>
                   )}
@@ -659,15 +683,10 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                     <div className="space-y-4">
                       <div className="grid sm:grid-cols-2 gap-4">
                         <div>
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Experience</label>
-                          <Select value={experience} onValueChange={(v) => setExperience(v as "sim" | "fpv" | "both")}>
-                            <SelectTrigger data-testid="select-experience"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="sim">Racing Simulator</SelectItem>
-                              <SelectItem value="fpv">FPV Arena</SelectItem>
-                              <SelectItem value="both">Both</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Resource Type</label>
+                          <div className="h-10 rounded-md border border-border/50 px-3 flex items-center text-sm capitalize">
+                            {resourceType === "sim" ? "SIM Racing" : resourceType === "vr" ? "VR Experience" : "RC Racing"}
+                          </div>
                         </div>
                         <div>
                           <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Guests</label>
@@ -802,7 +821,7 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                             : "-"}
                         </div>
                         <div className="text-sm"><span className="text-muted-foreground">Duration:</span> {selectedDurationMinutes} min</div>
-                        <div className="text-sm"><span className="text-muted-foreground">Rig:</span> {selectedRig?.name || "-"}</div>
+                        <div className="text-sm"><span className="text-muted-foreground">Resource:</span> {selectedResource?.name || "-"}</div>
                         <div className="text-sm capitalize"><span className="text-muted-foreground">Plan:</span> {plan}</div>
                         <div className="text-sm"><span className="text-muted-foreground">Guests:</span> {guests}</div>
                         <div className="text-sm font-semibold text-primary">
