@@ -13,6 +13,10 @@ import BookSessionPage from "@/pages/book-session";
 import ProfilePage from "@/pages/profile";
 import AdminLoginPage from "@/pages/admin-login";
 import AdminDashboardPage from "@/pages/admin-dashboard";
+import AdminPricingPage from "@/pages/admin-pricing";
+import AdminResourceAvailabilityPage from "@/pages/admin-resource-availability";
+import AdminResourcesPage from "@/pages/admin-resources";
+import AdminCustomersPage from "@/pages/admin-customers";
 
 function Router() {
   return (
@@ -25,6 +29,10 @@ function Router() {
       <Route path="/profile" component={ProfilePage} />
       <Route path="/admin" component={AdminLoginPage} />
       <Route path="/admin/dashboard" component={AdminDashboardPage} />
+      <Route path="/admin/pricing" component={AdminPricingPage} />
+      <Route path="/admin/resource-availability" component={AdminResourceAvailabilityPage} />
+      <Route path="/admin/resources" component={AdminResourcesPage} />
+      <Route path="/admin/customers" component={AdminCustomersPage} />
       <Route component={NotFound} />
     </Switch>
   );

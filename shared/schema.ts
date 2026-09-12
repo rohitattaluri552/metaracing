@@ -87,3 +87,45 @@ export const insertScheduleOverrideSchema = createInsertSchema(scheduleOverrides
 });
 export type InsertScheduleOverride = z.infer<typeof insertScheduleOverrideSchema>;
 export type ScheduleOverride = typeof scheduleOverrides.$inferSelect;
+
+export const pricing = sqliteTable("pricing", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  experienceType: text("experience_type").notNull(), // sim | vr | rc
+  resourceCategory: text("resource_category"), // single_screen | triple_screen
+  durationMinutes: integer("duration_minutes").notNull(),
+  price: integer("price").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at").notNull().$defaultFn(() => new Date().toISOString()),
+});
+
+export const insertPricingSchema = createInsertSchema(pricing).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPricing = z.infer<typeof insertPricingSchema>;
+export type Pricing = typeof pricing.$inferSelect;
+
+export const offers = sqliteTable("offers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  discountType: text("discount_type").notNull(), // percentage | fixed
+  discountValue: integer("discount_value").notNull(),
+  experienceType: text("experience_type").notNull(), // sim | vr | rc
+  resourceCategory: text("resource_category"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  startDate: text("start_date"),
+  endDate: text("end_date"),
+  marketingText: text("marketing_text").notNull().default(""),
+  createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at").notNull().$defaultFn(() => new Date().toISOString()),
+});
+
+export const insertOfferSchema = createInsertSchema(offers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertOffer = z.infer<typeof insertOfferSchema>;
+export type Offer = typeof offers.$inferSelect;

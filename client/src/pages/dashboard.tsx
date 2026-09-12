@@ -14,6 +14,8 @@ import {
 
 const experienceIcons: Record<string, any> = {
   sim: Monitor,
+  vr: Zap,
+  rc: Radio,
   fpv: Radio,
   both: Zap,
 };
@@ -375,9 +377,9 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent className="space-y-2">
                 {[
-                  { icon: Monitor, label: "Book Simulator", href: "/book" },
-                  { icon: Radio, label: "Book FPV Session", href: "/book" },
-                  { icon: Users, label: "Book Squad Event", href: "/book" },
+                  { icon: Monitor, label: "Book SIM Racing", href: "/book?type=sim" },
+                  { icon: Radio, label: "Book RC Car Racing", href: "/book?type=rc" },
+                  { icon: Zap, label: "Book VR Experience", href: "/book?type=vr" },
                   { icon: Trophy, label: "View Leaderboard", href: "/#leaderboard" },
                 ].map((action) => {
                   const ActionIcon = action.icon;
