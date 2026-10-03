@@ -1,20 +1,40 @@
-import { useEffect, useMemo, useState } from "react";
-import { format } from "date-fns";
-import { useLocation } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
-import { CalendarDays, CheckCircle, Loader2, ShieldCheck } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import {
+  buildPublicBookingPayload,
+  buildSendOtpPayload,
+  buildVerifyOtpPayload,
+} from "@/lib/api/payloads";
+import { apiRequest } from "@/lib/queryClient";
+import {
+  addDaysToDate,
+  formatTimeLabel,
+  getValidTimeOptions,
+  isDateWithinBookingWindow,
+  toDateInputValue,
+} from "@/lib/timeOptions";
+import { format } from "date-fns";
+import { CalendarDays, CheckCircle, Loader2, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 
 interface SlotInfo {
   time: string;
@@ -46,28 +66,22 @@ const QR_IMAGE_CANDIDATES = [
 ];
 
 function formatSlotLabel(time: string): string {
-  const [h, m] = time.split(":").map((v) => Number(v));
-  const hour = Number.isNaN(h) ? 0 : h;
-  const minute = Number.isNaN(m) ? 0 : m;
-  const fmt = (hr: number) => {
-    const ampm = hr >= 12 ? "PM" : "AM";
-    const h12 = hr > 12 ? hr - 12 : hr === 0 ? 12 : hr;
-    return `${h12}:00 ${ampm}`;
-  };
-  const ampm = hour >= 12 ? "PM" : "AM";
-  const h12 = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
-  return `${h12}:${String(minute).padStart(2, "0")} ${ampm}`;
+  return formatTimeLabel(time);
 }
 
 function addMinutesToTime(time: string, minutesToAdd: number): string {
   const [h, m] = time.split(":").map((v) => Number(v));
-  const total = (Number.isNaN(h) ? 0 : h) * 60 + (Number.isNaN(m) ? 0 : m) + minutesToAdd;
+  const total =
+    (Number.isNaN(h) ? 0 : h) * 60 + (Number.isNaN(m) ? 0 : m) + minutesToAdd;
   const nextH = Math.floor(total / 60);
   const nextM = total % 60;
   return `${String(nextH).padStart(2, "0")}:${String(nextM).padStart(2, "0")}`;
 }
 
-function getSessionDurationMinutes(resourceType: ResourceType, plan: BookingPlan): number {
+function getSessionDurationMinutes(
+  resourceType: ResourceType,
+  plan: BookingPlan
+): number {
   if (resourceType === "vr") return 15;
   if (resourceType === "rc") return 20;
   return plan === "starter" ? 30 : 60;
@@ -77,7 +91,8 @@ function isPastSlotForDate(dateStr: string, slot: string): boolean {
   if (!dateStr || !slot) return false;
   const [year, month, day] = dateStr.split("-").map((v) => Number(v));
   const [hour, minute] = slot.split(":").map((v) => Number(v));
-  if ([year, month, day, hour, minute].some((v) => Number.isNaN(v))) return false;
+  if ([year, month, day, hour, minute].some((v) => Number.isNaN(v)))
+    return false;
   const slotStart = new Date(year, month - 1, day, hour, minute, 0, 0);
   return slotStart.getTime() <= Date.now();
 }
@@ -86,7 +101,9 @@ interface BookingSectionProps {
   loggedInMode?: boolean;
 }
 
-export default function BookingSection({ loggedInMode = false }: BookingSectionProps) {
+export default function BookingSection({
+  loggedInMode = false,
+}: BookingSectionProps) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const { customer, setAuthenticatedCustomer } = useAuth();
@@ -113,53 +130,80 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [resources, setResources] = useState<ResourceInfo[]>([]);
-  const [selectedResourceId, setSelectedResourceId] = useState<number | null>(null);
+  const [selectedResourceId, setSelectedResourceId] = useState<number | null>(
+    null
+  );
   const [resourceType, setResourceType] = useState<ResourceType>("sim");
 
   const [plan, setPlan] = useState<BookingPlan>("starter");
   const [guests, setGuests] = useState("1");
   const [message, setMessage] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"qr" | "pay_at_venue">("pay_at_venue");
+  const [paymentMethod, setPaymentMethod] = useState<"qr" | "pay_at_venue">(
+    "pay_at_venue"
+  );
   const [qrImageIndex, setQrImageIndex] = useState(0);
 
   const [submitting, setSubmitting] = useState(false);
 
   const today = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const maxBookingDate = useMemo(() => {
+    const end = addDaysToDate(new Date(), 6);
+    return toDateInputValue(end);
+  }, []);
   const selectedDateValue = date ? new Date(`${date}T00:00:00`) : undefined;
   const closedDateSet = useMemo(() => new Set(closedDates), [closedDates]);
   const visibleSlots = useMemo(() => {
-    return slots.filter((s) => !isPastSlotForDate(date, s.time));
+    const validTimeOptions = getValidTimeOptions(date);
+    return slots.filter(
+      (s) =>
+        validTimeOptions.includes(s.time) && !isPastSlotForDate(date, s.time)
+    );
   }, [slots, date]);
   const firstAvailableIndex = useMemo(() => {
     const idx = visibleSlots.findIndex((s) => !s.full && !s.blocked);
     return idx >= 0 ? idx : 0;
   }, [visibleSlots]);
   const selectedDurationMinutes = getSessionDurationMinutes(resourceType, plan);
-  const selectedSlotCount = Math.max(1, Math.ceil(selectedDurationMinutes / SLOT_INTERVAL_MINUTES));
+  const selectedSlotCount = Math.max(
+    1,
+    Math.ceil(selectedDurationMinutes / SLOT_INTERVAL_MINUTES)
+  );
   const selectedSlotRange = useMemo(() => {
     if (!visibleSlots.length) return [] as SlotInfo[];
-    const safeStart = Math.max(firstAvailableIndex, Math.min(rangeStartIndex, visibleSlots.length - 1));
+    const safeStart = Math.max(
+      firstAvailableIndex,
+      Math.min(rangeStartIndex, visibleSlots.length - 1)
+    );
     return visibleSlots.slice(safeStart, safeStart + selectedSlotCount);
   }, [visibleSlots, rangeStartIndex, firstAvailableIndex, selectedSlotCount]);
-  const selectedRangeIsBookable = selectedSlotRange.length === selectedSlotCount
-    && selectedSlotRange.every((slot) => !slot.full && !slot.blocked);
-  const selectedStartSlot = selectedRangeIsBookable ? selectedSlotRange[0]?.time || "" : "";
-  const selectedEndTime = selectedRangeIsBookable && selectedStartSlot
-    ? addMinutesToTime(selectedStartSlot, selectedDurationMinutes)
+  const selectedRangeIsBookable =
+    selectedSlotRange.length === selectedSlotCount &&
+    selectedSlotRange.every((slot) => !slot.full && !slot.blocked);
+  const selectedStartSlot = selectedRangeIsBookable
+    ? selectedSlotRange[0]?.time || ""
     : "";
+  const selectedEndTime =
+    selectedRangeIsBookable && selectedStartSlot
+      ? addMinutesToTime(selectedStartSlot, selectedDurationMinutes)
+      : "";
 
   const resourceCardImage = (resource: ResourceInfo) => {
-    if (resource.type === "vr" || resource.type === "rc") return "/images/fpv-arena.png";
-    return resource.name.startsWith("Triple") ? "/images/racing-sim.png" : "/images/steering-wheel.png";
+    if (resource.type === "vr" || resource.type === "rc")
+      return "/images/fpv-arena.png";
+    return resource.name.startsWith("Triple")
+      ? "/images/racing-sim.png"
+      : "/images/steering-wheel.png";
   };
-  const selectedResource = resources.find((resource) => resource.id === selectedResourceId);
+  const selectedResource = resources.find(
+    (resource) => resource.id === selectedResourceId
+  );
 
   const selectRangeByBox = (clickedIndex: number) => {
     const clicked = visibleSlots[clickedIndex];
     if (!clicked || clicked.full || clicked.blocked) return;
     setRangeStartIndex(clickedIndex);
     setRangeEndIndex(clickedIndex);
-    };
+  };
 
   useEffect(() => {
     if (!loggedInMode) return;
@@ -223,7 +267,9 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
     setResources([]);
     setSelectedResourceId(null);
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [date]);
 
   useEffect(() => {
@@ -232,8 +278,12 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
       setRangeEndIndex(0);
       return;
     }
-    setRangeStartIndex((prev) => Math.max(firstAvailableIndex, Math.min(prev, visibleSlots.length - 1)));
-    setRangeEndIndex((prev) => Math.max(firstAvailableIndex, Math.min(prev, visibleSlots.length - 1)));
+    setRangeStartIndex((prev) =>
+      Math.max(firstAvailableIndex, Math.min(prev, visibleSlots.length - 1))
+    );
+    setRangeEndIndex((prev) =>
+      Math.max(firstAvailableIndex, Math.min(prev, visibleSlots.length - 1))
+    );
   }, [visibleSlots, firstAvailableIndex]);
 
   useEffect(() => {
@@ -246,11 +296,19 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
     if (!visibleSlots.length) return;
     const latestValidStart = visibleSlots.length - selectedSlotCount;
     if (rangeStartIndex > latestValidStart) {
-      const nextStart = Math.max(0, Math.min(firstAvailableIndex, latestValidStart));
+      const nextStart = Math.max(
+        0,
+        Math.min(firstAvailableIndex, latestValidStart)
+      );
       setRangeStartIndex(nextStart);
       setRangeEndIndex(nextStart);
     }
-  }, [visibleSlots.length, selectedSlotCount, rangeStartIndex, firstAvailableIndex]);
+  }, [
+    visibleSlots.length,
+    selectedSlotCount,
+    rangeStartIndex,
+    firstAvailableIndex,
+  ]);
 
   useEffect(() => {
     if (paymentMethod === "qr") {
@@ -279,7 +337,12 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
       .then((res) => res.json())
       .then((data) => {
         if (!cancelled) {
-          setResources((data.resources || []).map((resource: ResourceInfo) => ({ ...resource, available: resource.available ?? true })));
+          setResources(
+            (data.resources || []).map((resource: ResourceInfo) => ({
+              ...resource,
+              available: resource.available ?? true,
+            }))
+          );
         }
       })
       .catch(() => {
@@ -289,30 +352,65 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
         if (!cancelled) setResourcesLoading(false);
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [date, selectedStartSlot, selectedEndTime, resourceType, plan, guests]);
 
   const sendOtp = async () => {
-    if (!name.trim() || !phone.trim()) {
-      toast({ title: "Missing details", description: "Enter name and phone number", variant: "destructive" });
+    const normalizedName = name.trim();
+    const normalizedPhone = phone.replace(/\D/g, "").slice(0, 10);
+
+    if (!normalizedName || normalizedPhone.length !== 10) {
+      toast({
+        title: "Missing details",
+        description: "Enter a valid 10-digit phone number",
+        variant: "destructive",
+      });
       return;
     }
 
+    setPhone(normalizedPhone);
+
     setSendingOtp(true);
     try {
+      const payload = buildSendOtpPayload(normalizedName, normalizedPhone);
       const res = await fetch("/api/otp/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), phone: phone.trim() }),
+        body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to send OTP");
 
-      setOtpSessionId(data.sessionId);
-      setMockOtp(data.mockOtp || "");
-      toast({ title: "OTP sent", description: "Mock OTP generated for testing" });
+      const rawText = await res.text();
+      let data: Record<string, unknown> = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          throw new Error(
+            "The OTP API is not reachable from this page. Please reload the app on the active dev port or restart the server."
+          );
+        }
+      }
+
+      if (!res.ok) {
+        const errorMessage =
+          typeof data.error === "string" ? data.error : "Failed to send OTP";
+        throw new Error(errorMessage);
+      }
+
+      setOtpSessionId(String(data.sessionId || ""));
+      setMockOtp(String(data.mockOtp || ""));
+      toast({
+        title: "OTP sent",
+        description: "Mock OTP generated for testing",
+      });
     } catch (err: any) {
-      toast({ title: "OTP send failed", description: err.message, variant: "destructive" });
+      toast({
+        title: "OTP send failed",
+        description: err.message,
+        variant: "destructive",
+      });
     } finally {
       setSendingOtp(false);
     }
@@ -320,16 +418,21 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
   const verifyOtp = async () => {
     if (!otpSessionId || !otp.trim()) {
-      toast({ title: "Missing OTP", description: "Enter the OTP and verify", variant: "destructive" });
+      toast({
+        title: "Missing OTP",
+        description: "Enter the OTP and verify",
+        variant: "destructive",
+      });
       return;
     }
 
     setVerifyingOtp(true);
     try {
+      const payload = buildVerifyOtpPayload(otpSessionId, otp);
       const res = await fetch("/api/otp/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: otpSessionId, otp: otp.trim() }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "OTP verification failed");
@@ -339,9 +442,16 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
         setAuthenticatedCustomer(data.customer, data.token);
       }
       navigate("/dashboard");
-      toast({ title: "Verified", description: "Phone number verified and login session created" });
+      toast({
+        title: "Verified",
+        description: "Phone number verified and login session created",
+      });
     } catch (err: any) {
-      toast({ title: "OTP verification failed", description: err.message, variant: "destructive" });
+      toast({
+        title: "OTP verification failed",
+        description: err.message,
+        variant: "destructive",
+      });
     } finally {
       setVerifyingOtp(false);
     }
@@ -349,51 +459,88 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
   const submitBooking = async () => {
     if (!loggedInMode && !otpToken) {
-      toast({ title: "Verification required", description: "Verify OTP first", variant: "destructive" });
+      toast({
+        title: "Verification required",
+        description: "Verify OTP first",
+        variant: "destructive",
+      });
       setStep("verify");
       return;
     }
+    if (phone.length !== 10) {
+      toast({
+        title: "Invalid phone number",
+        description: "Enter a valid 10-digit phone number",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!date || selectedSlotRange.length === 0) {
-      toast({ title: "Missing selection", description: "Select date and time range", variant: "destructive" });
+      toast({
+        title: "Missing selection",
+        description: "Select date and time range",
+        variant: "destructive",
+      });
       return;
     }
     if (!selectedRangeIsBookable) {
-      toast({ title: "Unavailable range", description: "Selected range includes booked/unavailable slots", variant: "destructive" });
+      toast({
+        title: "Unavailable range",
+        description: "Selected range includes booked/unavailable slots",
+        variant: "destructive",
+      });
       return;
     }
     if (!selectedResource) {
-      toast({ title: "Select a resource", description: "Please select one available resource", variant: "destructive" });
+      toast({
+        title: "Select a resource",
+        description: "Please select one available resource",
+        variant: "destructive",
+      });
       return;
     }
 
     setSubmitting(true);
     try {
       const paymentLabel = paymentMethod === "qr" ? "QR" : "Pay at Venue";
-      const composedMessage = `${message?.trim() || paymentLabel}\nResource: ${selectedResource.name}\nPayment Method: ${paymentLabel}`;
-      await apiRequest("POST", "/api/bookings", {
-        name: name.trim(),
-        phone: phone.trim(),
-        email: customer?.email,
-        resourceType,
-        resourceId: selectedResource.id,
-        experience: resourceType,
-        plan,
-        date,
-        startTime: selectedStartSlot,
-        endTime: selectedEndTime,
-        partySize: Number(guests),
-        timeSlots: selectedSlotRange.map((slot) => slot.time),
-        guests,
-        message: composedMessage,
-        customerId: customer?.id ?? null,
-        paymentMethod,
-        ...(loggedInMode ? {} : { otpToken }),
-      });
+      const composedMessage = `${message?.trim() || paymentLabel}\nResource: ${
+        selectedResource.name
+      }\nPayment Method: ${paymentLabel}`;
+      await apiRequest(
+        "POST",
+        "/api/bookings",
+        buildPublicBookingPayload({
+          name,
+          phone,
+          email: customer?.email,
+          resourceType,
+          resourceId: selectedResource.id,
+          experience: resourceType,
+          plan,
+          date,
+          startTime: selectedStartSlot,
+          endTime: selectedEndTime,
+          partySize: Number(guests),
+          timeSlots: selectedSlotRange.map((slot) => slot.time),
+          guests,
+          message: composedMessage,
+          customerId: customer?.id ?? null,
+          paymentMethod,
+          otpToken: loggedInMode ? undefined : otpToken,
+        })
+      );
 
       setStep("done");
-      toast({ title: "Booking confirmed", description: `Payment mode: ${paymentLabel}. View your ticket in dashboard.` });
+      toast({
+        title: "Booking confirmed",
+        description: `Payment mode: ${paymentLabel}. View your ticket in dashboard.`,
+      });
     } catch (err: any) {
-      toast({ title: "Booking failed", description: err.message || "Please try again", variant: "destructive" });
+      toast({
+        title: "Booking failed",
+        description: err.message || "Please try again",
+        variant: "destructive",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -419,7 +566,11 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
   };
 
   return (
-    <section id="booking" className="py-24 relative overflow-hidden" data-testid="section-booking">
+    <section
+      id="booking"
+      className="py-24 relative overflow-hidden"
+      data-testid="section-booking"
+    >
       <div className="absolute top-0 left-0 right-0 h-px neon-divider opacity-40" />
 
       <div className="absolute inset-0 pointer-events-none">
@@ -429,14 +580,18 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
         <div className="text-center mb-14">
-          <Badge variant="outline" className="border-primary/40 text-primary font-racing text-xs tracking-widest uppercase mb-4">
+          <Badge
+            variant="outline"
+            className="border-primary/40 text-primary font-racing text-xs tracking-widest uppercase mb-4"
+          >
             Book A Session
           </Badge>
           <h2 className="font-racing text-4xl md:text-5xl font-bold uppercase tracking-tight text-foreground mb-4">
             Start Your <span className="text-primary">Engine</span>
           </h2>
           <p className="text-muted-foreground max-w-xl mx-auto text-base leading-relaxed">
-            Reserve your spot at MetaRacing. We'll confirm your booking within 30 minutes.
+            Reserve your spot at MetaRacing. We'll confirm your booking within
+            30 minutes.
           </p>
         </div>
 
@@ -444,19 +599,32 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
           <Card className="border-border/50" data-testid="booking-form-card">
             <CardContent className="p-6 md:p-8">
               {step === "done" ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center" data-testid="booking-success">
+                <div
+                  className="flex flex-col items-center justify-center py-16 text-center"
+                  data-testid="booking-success"
+                >
                   <div className="w-16 h-16 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center mb-4 animate-pulse-glow">
                     <CheckCircle className="w-8 h-8 text-primary" />
                   </div>
-                  <h3 className="font-racing text-2xl font-bold uppercase text-foreground mb-2">Booking Confirmed!</h3>
+                  <h3 className="font-racing text-2xl font-bold uppercase text-foreground mb-2">
+                    Booking Confirmed!
+                  </h3>
                   <p className="text-muted-foreground max-w-sm">
-                    Your slot is locked. Payment mode selected: {paymentMethod === "qr" ? "QR" : "Pay at Venue"}.
+                    Your slot is locked. Payment mode selected:{" "}
+                    {paymentMethod === "qr" ? "QR" : "Pay at Venue"}.
                   </p>
                   <div className="mt-6 flex flex-wrap justify-center gap-3">
-                    <Button onClick={() => navigate("/dashboard")} data-testid="button-view-my-tickets">
+                    <Button
+                      onClick={() => navigate("/dashboard")}
+                      data-testid="button-view-my-tickets"
+                    >
                       View My Tickets
                     </Button>
-                    <Button variant="outline" onClick={resetFlow} data-testid="button-book-another">
+                    <Button
+                      variant="outline"
+                      onClick={resetFlow}
+                      data-testid="button-book-another"
+                    >
                       Book Another Session
                     </Button>
                   </div>
@@ -465,36 +633,105 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                 <div className="space-y-6" data-testid="booking-form">
                   <div className="flex items-center justify-between text-xs uppercase tracking-widest font-racing text-muted-foreground">
                     <span>Step: {step}</span>
-                    <span>Payment: {paymentMethod === "qr" ? "QR" : "Pay at Venue"}</span>
+                    <span>
+                      Payment: {paymentMethod === "qr" ? "QR" : "Pay at Venue"}
+                    </span>
                   </div>
 
                   {step === "verify" && !loggedInMode && (
                     <div className="space-y-4">
                       <div className="grid sm:grid-cols-2 gap-4">
                         <div>
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Full Name</label>
-                          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" data-testid="input-name" />
+                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                            Full Name
+                          </label>
+                          <Input
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="Your name"
+                            data-testid="input-name"
+                          />
                         </div>
                         <div>
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Phone Number</label>
-                          <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="9876543210" data-testid="input-phone" />
+                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                            Phone Number
+                          </label>
+                          <Input
+                            value={phone}
+                            onChange={(e) => {
+                              const digitsOnly = e.target.value.replace(
+                                /\D/g,
+                                ""
+                              );
+                              if (digitsOnly.length <= 10) {
+                                setPhone(digitsOnly);
+                              }
+                            }}
+                            placeholder="9876543210"
+                            data-testid="input-phone"
+                            type="tel"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                          />
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <Button type="button" onClick={sendOtp} disabled={sendingOtp} data-testid="button-send-otp">
-                          {sendingOtp ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                      <div className="flex items-center justify-center">
+                        <Button
+                          type="button"
+                          onClick={sendOtp}
+                          disabled={sendingOtp}
+                          data-testid="button-send-otp"
+                          className="w-[50%]"
+                        >
+                          {sendingOtp ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : null}
                           Send OTP
                         </Button>
                       </div>
                       {otpSessionId && (
-                        <div className="space-y-2 rounded-md border border-border/50 p-4">
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Enter OTP</label>
-                          <Input value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="6-digit OTP" data-testid="input-otp" />
+                        <div className="space-y-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <label className="text-xs uppercase tracking-widest font-racing text-amber-200">
+                              Enter OTP
+                            </label>
+                            {mockOtp ? (
+                              <span className="rounded-full border border-amber-300/50 bg-amber-400/10 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.2em] text-amber-100">
+                                Test OTP
+                              </span>
+                            ) : null}
+                          </div>
+
                           {mockOtp ? (
-                            <div className="text-xs text-amber-300">Mock OTP: {mockOtp}</div>
+                            <div className="rounded-md border border-amber-300/40 bg-background/60 p-3 text-center">
+                              <div className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+                                Mock OTP
+                              </div>
+                              <div className="mt-2 text-3xl font-bold tracking-[0.3em] text-amber-300">
+                                {mockOtp}
+                              </div>
+                            </div>
                           ) : null}
-                          <Button type="button" onClick={verifyOtp} disabled={verifyingOtp} data-testid="button-verify-otp">
-                            {verifyingOtp ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
+
+                          <Input
+                            value={otp}
+                            onChange={(e) => setOtp(e.target.value)}
+                            placeholder="6-digit OTP"
+                            data-testid="input-otp"
+                            aria-live="polite"
+                          />
+
+                          <Button
+                            type="button"
+                            onClick={verifyOtp}
+                            disabled={verifyingOtp}
+                            data-testid="button-verify-otp"
+                          >
+                            {verifyingOtp ? (
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="w-4 h-4 mr-2" />
+                            )}
                             Verify OTP
                           </Button>
                         </div>
@@ -505,8 +742,13 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                   {step === "date" && (
                     <div className="space-y-4">
                       <div>
-                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Select Date</label>
-                        <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                          Select Date
+                        </label>
+                        <Popover
+                          open={calendarOpen}
+                          onOpenChange={setCalendarOpen}
+                        >
                           <PopoverTrigger asChild>
                             <Button
                               type="button"
@@ -515,7 +757,9 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                               data-testid="input-date"
                             >
                               <CalendarDays className="mr-2 h-4 w-4" />
-                              {selectedDateValue ? format(selectedDateValue, "PPP") : "Pick a booking date"}
+                              {selectedDateValue
+                                ? format(selectedDateValue, "PPP")
+                                : "Pick a booking date"}
                             </Button>
                           </PopoverTrigger>
                           <PopoverContent className="w-auto p-0" align="start">
@@ -529,7 +773,12 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                               }}
                               disabled={(day) => {
                                 const isoDate = format(day, "yyyy-MM-dd");
-                                return isoDate < today || closedDateSet.has(isoDate);
+                                return (
+                                  isoDate < today ||
+                                  isoDate > maxBookingDate ||
+                                  !isDateWithinBookingWindow(isoDate) ||
+                                  closedDateSet.has(isoDate)
+                                );
                               }}
                               initialFocus
                             />
@@ -538,10 +787,16 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       </div>
                       {dateClosed ? (
                         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                          This date is closed for bookings. Please choose another date.
+                          This date is closed for bookings. Please choose
+                          another date.
                         </div>
                       ) : null}
-                      <Button type="button" onClick={() => setStep("slot")} disabled={!date || dateClosed} data-testid="button-go-slot">
+                      <Button
+                        type="button"
+                        onClick={() => setStep("slot")}
+                        disabled={!date || dateClosed}
+                        data-testid="button-go-slot"
+                      >
                         Continue to Time Slots
                       </Button>
                     </div>
@@ -550,50 +805,83 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                   {step === "slot" && (
                     <div className="space-y-4">
                       <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-3 text-sm text-muted-foreground">
-                        <div className="font-racing text-xs uppercase tracking-widest text-foreground mb-2">How To Select A Session</div>
+                        <div className="font-racing text-xs uppercase tracking-widest text-foreground mb-2">
+                          How To Select A Session
+                        </div>
                         <div>1. Choose a starting time slot.</div>
-                        <div>2. The session duration follows the selected resource type and plan.</div>
-                        <div>3. We automatically calculate the exact ending time.</div>
-                        <div>4. Choose another start time to reset the session.</div>
+                        <div>
+                          2. The session duration follows the selected resource
+                          type and plan.
+                        </div>
+                        <div>
+                          3. We automatically calculate the exact ending time.
+                        </div>
+                        <div>
+                          4. Choose another start time to reset the session.
+                        </div>
                       </div>
                       {slotsLoading ? (
                         <div className="flex items-center gap-2 py-2">
                           <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Loading slots...</span>
+                          <span className="text-sm text-muted-foreground">
+                            Loading slots...
+                          </span>
                         </div>
                       ) : (
                         <div className="space-y-4 rounded-md border border-border/50 p-4">
                           {!visibleSlots.length ? (
-                            <div className="text-sm text-muted-foreground">No available slots for this date.</div>
+                            <div className="text-sm text-muted-foreground">
+                              No available slots for this date.
+                            </div>
                           ) : (
                             <>
-                              <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Booking Time Range (Box Selection)</div>
+                              <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                                Booking Time Range (Box Selection)
+                              </div>
 
                               <div className="flex items-center justify-between text-xs">
                                 <div>
-                                  <span className="text-muted-foreground">From:</span>{" "}
-                                  <span className="font-racing text-primary">{selectedStartSlot ? formatSlotLabel(selectedStartSlot) : "-"}</span>
+                                  <span className="text-muted-foreground">
+                                    From:
+                                  </span>{" "}
+                                  <span className="font-racing text-primary">
+                                    {selectedStartSlot
+                                      ? formatSlotLabel(selectedStartSlot)
+                                      : "-"}
+                                  </span>
                                 </div>
                                 <div>
-                                  <span className="text-muted-foreground">Until:</span>{" "}
-                                  <span className="font-racing text-primary">{selectedEndTime ? formatSlotLabel(selectedEndTime) : "-"}</span>
+                                  <span className="text-muted-foreground">
+                                    Until:
+                                  </span>{" "}
+                                  <span className="font-racing text-primary">
+                                    {selectedEndTime
+                                      ? formatSlotLabel(selectedEndTime)
+                                      : "-"}
+                                  </span>
                                 </div>
                                 <div>
-                                  <span className="text-muted-foreground">Duration:</span>{" "}
-                                  <span className="font-racing text-primary">{selectedDurationMinutes} min</span>
+                                  <span className="text-muted-foreground">
+                                    Duration:
+                                  </span>{" "}
+                                  <span className="font-racing text-primary">
+                                    {selectedDurationMinutes} min
+                                  </span>
                                 </div>
                               </div>
 
                               {!selectedRangeIsBookable ? (
                                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                                  Selected range includes booked/unavailable slots. Choose a fully available range.
+                                  Selected range includes booked/unavailable
+                                  slots. Choose a fully available range.
                                 </div>
                               ) : null}
 
                               <div className="flex gap-2 overflow-x-auto pb-1">
                                 {visibleSlots.map((s, idx) => {
                                   const start = rangeStartIndex;
-                                  const end = rangeStartIndex + selectedSlotCount - 1;
+                                  const end =
+                                    rangeStartIndex + selectedSlotCount - 1;
                                   const inRange = idx >= start && idx <= end;
                                   const unavailable = s.full || s.blocked;
                                   return (
@@ -604,12 +892,24 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                                         inRange && !unavailable
                                           ? "border-primary bg-primary/15 text-primary"
                                           : unavailable
-                                            ? "border-red-600/40 bg-red-600/10 text-red-300"
-                                            : "border-green-600/40 bg-green-600/10 text-green-300"
-                                      } ${unavailable ? "cursor-not-allowed opacity-80" : "cursor-pointer hover:border-primary/60"}`}
+                                          ? "border-red-600/40 bg-red-600/10 text-red-300"
+                                          : "border-green-600/40 bg-green-600/10 text-green-300"
+                                      } ${
+                                        unavailable
+                                          ? "cursor-not-allowed opacity-80"
+                                          : "cursor-pointer hover:border-primary/60"
+                                      }`}
                                     >
-                                      <div className="font-racing text-xs uppercase tracking-widest">{formatSlotLabel(s.time)}</div>
-                                      <div className="text-[11px] mt-1">{unavailable ? (s.blocked ? "Unavailable" : "Booked") : "Available"}</div>
+                                      <div className="font-racing text-xs uppercase tracking-widest">
+                                        {formatSlotLabel(s.time)}
+                                      </div>
+                                      <div className="text-[11px] mt-1">
+                                        {unavailable
+                                          ? s.blocked
+                                            ? "Unavailable"
+                                            : "Booked"
+                                          : "Available"}
+                                      </div>
                                     </div>
                                   );
                                 })}
@@ -622,21 +922,36 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       {selectedStartSlot ? (
                         <div className="space-y-2">
                           <div>
-                            <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Resource Type</label>
-                            <Select value={resourceType} onValueChange={(value) => setResourceType(value as ResourceType)}>
-                              <SelectTrigger data-testid="select-resource-type"><SelectValue /></SelectTrigger>
+                            <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                              Resource Type
+                            </label>
+                            <Select
+                              value={resourceType}
+                              onValueChange={(value) =>
+                                setResourceType(value as ResourceType)
+                              }
+                            >
+                              <SelectTrigger data-testid="select-resource-type">
+                                <SelectValue />
+                              </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="sim">SIM Racing</SelectItem>
-                                <SelectItem value="vr">VR Experience</SelectItem>
+                                <SelectItem value="vr">
+                                  VR Experience
+                                </SelectItem>
                                 <SelectItem value="rc">RC Racing</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
-                          <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Available Resources</div>
+                          <div className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                            Available Resources
+                          </div>
                           {resourcesLoading ? (
                             <div className="flex items-center gap-2 py-2">
                               <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                              <span className="text-sm text-muted-foreground">Loading resources...</span>
+                              <span className="text-sm text-muted-foreground">
+                                Loading resources...
+                              </span>
                             </div>
                           ) : (
                             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -645,13 +960,15 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                                   key={resource.id}
                                   type="button"
                                   disabled={!resource.available}
-                                  onClick={() => setSelectedResourceId(resource.id)}
+                                  onClick={() =>
+                                    setSelectedResourceId(resource.id)
+                                  }
                                   className={`rounded-md border overflow-hidden text-sm text-left transition-all ${
                                     !resource.available
                                       ? "border-red-600/40 bg-red-600/10 text-red-300 opacity-70 cursor-not-allowed"
                                       : selectedResourceId === resource.id
-                                        ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
-                                        : "border-green-600/40 bg-green-600/10 text-green-300 hover:border-primary/60"
+                                      ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
+                                      : "border-green-600/40 bg-green-600/10 text-green-300 hover:border-primary/60"
                                   }`}
                                   data-testid={`resource-${resource.id}`}
                                 >
@@ -661,9 +978,17 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                                     className="h-28 w-full object-cover"
                                   />
                                   <div className="px-3 py-3">
-                                    <div className="font-medium">{resource.name}</div>
-                                    <div className="text-xs mt-1">{resource.available ? "Available" : "Unavailable"}</div>
-                                    <div className="text-xs mt-1">Up to {resource.maxPeople} people</div>
+                                    <div className="font-medium">
+                                      {resource.name}
+                                    </div>
+                                    <div className="text-xs mt-1">
+                                      {resource.available
+                                        ? "Available"
+                                        : "Unavailable"}
+                                    </div>
+                                    <div className="text-xs mt-1">
+                                      Up to {resource.maxPeople} people
+                                    </div>
                                   </div>
                                 </button>
                               ))}
@@ -673,8 +998,24 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       ) : null}
 
                       <div className="flex gap-2">
-                        <Button type="button" variant="outline" onClick={() => setStep("date")}>Back</Button>
-                        <Button type="button" onClick={() => setStep("details")} disabled={!selectedStartSlot || !selectedResourceId || !selectedRangeIsBookable}>Continue</Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setStep("date")}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => setStep("details")}
+                          disabled={
+                            !selectedStartSlot ||
+                            !selectedResourceId ||
+                            !selectedRangeIsBookable
+                          }
+                        >
+                          Continue
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -683,15 +1024,25 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                     <div className="space-y-4">
                       <div className="grid sm:grid-cols-2 gap-4">
                         <div>
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Resource Type</label>
+                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                            Resource Type
+                          </label>
                           <div className="h-10 rounded-md border border-border/50 px-3 flex items-center text-sm capitalize">
-                            {resourceType === "sim" ? "SIM Racing" : resourceType === "vr" ? "VR Experience" : "RC Racing"}
+                            {resourceType === "sim"
+                              ? "SIM Racing"
+                              : resourceType === "vr"
+                              ? "VR Experience"
+                              : "RC Racing"}
                           </div>
                         </div>
                         <div>
-                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Guests</label>
+                          <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                            Guests
+                          </label>
                           <Select value={guests} onValueChange={setGuests}>
-                            <SelectTrigger data-testid="select-guests"><SelectValue /></SelectTrigger>
+                            <SelectTrigger data-testid="select-guests">
+                              <SelectValue />
+                            </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="1">1 person</SelectItem>
                               <SelectItem value="2">2 people</SelectItem>
@@ -704,46 +1055,62 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       </div>
 
                       <div>
-                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-2 block">Select Plan</label>
+                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-2 block">
+                          Select Plan
+                        </label>
                         <div className="grid sm:grid-cols-2 gap-3">
-                          {([
-                            {
-                              id: "starter" as const,
-                              name: "Starter",
-                              desc: "30 min session",
-                              price: "₹249",
-                              priceNote: "or ₹449/hr",
-                              border: plan === "starter" ? "border-primary bg-primary/10 ring-2 ring-primary" : "border-border/40 hover:border-primary/50",
-                              tag: "Single",
-                            },
-                            {
-                              id: "racer" as const,
-                              name: "Racer",
-                              desc: "1 hour · priority access",
-                              price: "₹299",
-                              priceNote: "or ₹549/hr",
-                              border: plan === "racer" ? "border-primary bg-primary/10 ring-2 ring-primary" : "border-border/40 hover:border-primary/50",
-                              tag: "Popular",
-                            },
-                            {
-                              id: "squad" as const,
-                              name: "Squad",
-                              desc: "Group · 4–6 members",
-                              price: "₹499",
-                              priceNote: "per person/hr",
-                              border: plan === "squad" ? "border-accent bg-accent/10 ring-2 ring-accent" : "border-border/40 hover:border-accent/50",
-                              tag: "Group",
-                            },
-                            {
-                              id: "tournament" as const,
-                              name: "Tournament",
-                              desc: "Pro · after 10 PM only",
-                              price: "₹999",
-                              priceNote: "per session",
-                              border: plan === "tournament" ? "border-amber-400 bg-amber-400/10 ring-2 ring-amber-400" : "border-border/40 hover:border-amber-400/50",
-                              tag: "Pro",
-                            },
-                          ] as const).map((p) => (
+                          {(
+                            [
+                              {
+                                id: "starter" as const,
+                                name: "Starter",
+                                desc: "30 min session",
+                                price: "₹249",
+                                priceNote: "or ₹449/hr",
+                                border:
+                                  plan === "starter"
+                                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                                    : "border-border/40 hover:border-primary/50",
+                                tag: "Single",
+                              },
+                              {
+                                id: "racer" as const,
+                                name: "Racer",
+                                desc: "1 hour · priority access",
+                                price: "₹299",
+                                priceNote: "or ₹549/hr",
+                                border:
+                                  plan === "racer"
+                                    ? "border-primary bg-primary/10 ring-2 ring-primary"
+                                    : "border-border/40 hover:border-primary/50",
+                                tag: "Popular",
+                              },
+                              {
+                                id: "squad" as const,
+                                name: "Squad",
+                                desc: "Group · 4–6 members",
+                                price: "₹499",
+                                priceNote: "per person/hr",
+                                border:
+                                  plan === "squad"
+                                    ? "border-accent bg-accent/10 ring-2 ring-accent"
+                                    : "border-border/40 hover:border-accent/50",
+                                tag: "Group",
+                              },
+                              {
+                                id: "tournament" as const,
+                                name: "Tournament",
+                                desc: "Pro · after 10 PM only",
+                                price: "₹999",
+                                priceNote: "per session",
+                                border:
+                                  plan === "tournament"
+                                    ? "border-amber-400 bg-amber-400/10 ring-2 ring-amber-400"
+                                    : "border-border/40 hover:border-amber-400/50",
+                                tag: "Pro",
+                              },
+                            ] as const
+                          ).map((p) => (
                             <button
                               key={p.id}
                               type="button"
@@ -752,13 +1119,23 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                               data-testid={`plan-${p.id}`}
                             >
                               <div className="flex items-center justify-between mb-1">
-                                <span className="font-racing text-sm uppercase tracking-widest text-foreground">{p.name}</span>
-                                <span className="text-[10px] font-racing uppercase tracking-widest text-muted-foreground border border-border/40 rounded px-1.5 py-0.5">{p.tag}</span>
+                                <span className="font-racing text-sm uppercase tracking-widest text-foreground">
+                                  {p.name}
+                                </span>
+                                <span className="text-[10px] font-racing uppercase tracking-widest text-muted-foreground border border-border/40 rounded px-1.5 py-0.5">
+                                  {p.tag}
+                                </span>
                               </div>
-                              <div className="text-xs text-muted-foreground mb-2">{p.desc}</div>
+                              <div className="text-xs text-muted-foreground mb-2">
+                                {p.desc}
+                              </div>
                               <div className="flex items-baseline gap-1.5">
-                                <span className="font-racing text-xl font-bold text-primary">{p.price}</span>
-                                <span className="text-xs text-muted-foreground">{p.priceNote}</span>
+                                <span className="font-racing text-xl font-bold text-primary">
+                                  {p.price}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  {p.priceNote}
+                                </span>
                               </div>
                             </button>
                           ))}
@@ -766,7 +1143,9 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       </div>
 
                       <div>
-                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Special Requests</label>
+                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                          Special Requests
+                        </label>
                         <Textarea
                           placeholder="Any special requests"
                           className="resize-none"
@@ -778,8 +1157,19 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                       </div>
 
                       <div className="flex gap-2">
-                        <Button type="button" variant="outline" onClick={() => setStep("slot")}>Back</Button>
-                        <Button type="button" onClick={() => setStep("payment")}>Continue to Payment</Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setStep("slot")}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => setStep("payment")}
+                        >
+                          Continue to Payment
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -787,53 +1177,108 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                   {step === "payment" && (
                     <div className="space-y-4">
                       <div>
-                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-2 block">Choose Payment Option</label>
+                        <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-2 block">
+                          Choose Payment Option
+                        </label>
                         <div className="grid sm:grid-cols-2 gap-3">
                           <button
                             type="button"
                             onClick={() => setPaymentMethod("qr")}
-                            className={`rounded-md border p-4 text-left transition-all ${paymentMethod === "qr" ? "border-primary bg-primary/10 ring-2 ring-primary" : "border-border/40 hover:border-primary/50"}`}
+                            className={`rounded-md border p-4 text-left transition-all ${
+                              paymentMethod === "qr"
+                                ? "border-primary bg-primary/10 ring-2 ring-primary"
+                                : "border-border/40 hover:border-primary/50"
+                            }`}
                             data-testid="payment-method-qr"
                           >
-                            <div className="font-racing text-sm uppercase tracking-widest text-foreground">Pay Through QR</div>
-                            <div className="text-xs text-muted-foreground mt-2">Reserve now and complete payment by QR at the counter.</div>
+                            <div className="font-racing text-sm uppercase tracking-widest text-foreground">
+                              Pay Through QR
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-2">
+                              Reserve now and complete payment by QR at the
+                              counter.
+                            </div>
                           </button>
                           <button
                             type="button"
                             onClick={() => setPaymentMethod("pay_at_venue")}
-                            className={`rounded-md border p-4 text-left transition-all ${paymentMethod === "pay_at_venue" ? "border-primary bg-primary/10 ring-2 ring-primary" : "border-border/40 hover:border-primary/50"}`}
+                            className={`rounded-md border p-4 text-left transition-all ${
+                              paymentMethod === "pay_at_venue"
+                                ? "border-primary bg-primary/10 ring-2 ring-primary"
+                                : "border-border/40 hover:border-primary/50"
+                            }`}
                             data-testid="payment-method-pay-at-venue"
                           >
-                            <div className="font-racing text-sm uppercase tracking-widest text-foreground">Pay at Venue</div>
-                            <div className="text-xs text-muted-foreground mt-2">Reserve now and pay directly before your session starts.</div>
+                            <div className="font-racing text-sm uppercase tracking-widest text-foreground">
+                              Pay at Venue
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-2">
+                              Reserve now and pay directly before your session
+                              starts.
+                            </div>
                           </button>
                         </div>
                       </div>
 
                       <div className="rounded-md border border-border/50 p-4 space-y-2">
-                        <div className="text-sm"><span className="text-muted-foreground">Name:</span> {name}</div>
-                        <div className="text-sm"><span className="text-muted-foreground">Phone:</span> {phone}</div>
-                        <div className="text-sm"><span className="text-muted-foreground">Date:</span> {date}</div>
                         <div className="text-sm">
-                          <span className="text-muted-foreground">Slot Range:</span>{" "}
+                          <span className="text-muted-foreground">Name:</span>{" "}
+                          {name}
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Phone:</span>{" "}
+                          {phone}
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Date:</span>{" "}
+                          {date}
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">
+                            Slot Range:
+                          </span>{" "}
                           {selectedStartSlot && selectedEndTime
-                            ? `${formatSlotLabel(selectedStartSlot)} to ${formatSlotLabel(selectedEndTime)}`
+                            ? `${formatSlotLabel(
+                                selectedStartSlot
+                              )} to ${formatSlotLabel(selectedEndTime)}`
                             : "-"}
                         </div>
-                        <div className="text-sm"><span className="text-muted-foreground">Duration:</span> {selectedDurationMinutes} min</div>
-                        <div className="text-sm"><span className="text-muted-foreground">Resource:</span> {selectedResource?.name || "-"}</div>
-                        <div className="text-sm capitalize"><span className="text-muted-foreground">Plan:</span> {plan}</div>
-                        <div className="text-sm"><span className="text-muted-foreground">Guests:</span> {guests}</div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">
+                            Duration:
+                          </span>{" "}
+                          {selectedDurationMinutes} min
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">
+                            Resource:
+                          </span>{" "}
+                          {selectedResource?.name || "-"}
+                        </div>
+                        <div className="text-sm capitalize">
+                          <span className="text-muted-foreground">Plan:</span>{" "}
+                          {plan}
+                        </div>
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Guests:</span>{" "}
+                          {guests}
+                        </div>
                         <div className="text-sm font-semibold text-primary">
-                          <span className="text-muted-foreground font-normal">Payment:</span>{" "}
-                          {paymentMethod === "qr" ? "Pay Through QR" : "Pay at Venue"}
+                          <span className="text-muted-foreground font-normal">
+                            Payment:
+                          </span>{" "}
+                          {paymentMethod === "qr"
+                            ? "Pay Through QR"
+                            : "Pay at Venue"}
                         </div>
                       </div>
 
                       {paymentMethod === "qr" ? (
                         <div className="rounded-md border border-primary/30 bg-primary/5 p-4 text-sm text-muted-foreground space-y-3">
                           <div>
-                            QR option selected. Your booking will be reserved now and payment can be completed through QR at the venue.
+                            QR option selected. Your booking will be reserved
+                            now and payment can be completed through QR at the
+                            venue.
                           </div>
                           <div className="mx-auto max-w-[260px] rounded-md border border-border/50 bg-white p-3">
                             <img
@@ -841,22 +1286,43 @@ export default function BookingSection({ loggedInMode = false }: BookingSectionP
                               alt="MetaRacing payment QR"
                               className="w-full h-auto rounded-sm"
                               onError={() => {
-                                setQrImageIndex((prev) => Math.min(prev + 1, QR_IMAGE_CANDIDATES.length - 1));
+                                setQrImageIndex((prev) =>
+                                  Math.min(
+                                    prev + 1,
+                                    QR_IMAGE_CANDIDATES.length - 1
+                                  )
+                                );
                               }}
                               data-testid="payment-qr-image"
                             />
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            Place your actual QR file in client/public/images as payment_qr code.png, .jpg, or .jpeg to replace this temporary placeholder automatically.
+                            Place your actual QR file in client/public/images as
+                            payment_qr code.png, .jpg, or .jpeg to replace this
+                            temporary placeholder automatically.
                           </div>
                         </div>
                       ) : null}
 
                       <div className="flex gap-2">
-                        <Button type="button" variant="outline" onClick={() => setStep("details")}>Back</Button>
-                        <Button type="button" onClick={submitBooking} disabled={submitting} data-testid="button-submit-booking">
-                          {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                          Confirm Booking ({paymentMethod === "qr" ? "QR" : "Pay at Venue"})
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setStep("details")}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={submitBooking}
+                          disabled={submitting}
+                          data-testid="button-submit-booking"
+                        >
+                          {submitting ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : null}
+                          Confirm Booking (
+                          {paymentMethod === "qr" ? "QR" : "Pay at Venue"})
                         </Button>
                       </div>
                     </div>

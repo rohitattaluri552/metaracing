@@ -1,15 +1,19 @@
-import { useEffect, useState } from "react";
-import { format } from "date-fns";
-import { useLocation } from "wouter";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import {
   Table,
@@ -19,26 +23,42 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  ShieldCheck,
+  buildAdminBookingPayload,
+  buildScheduleOverridePayload,
+} from "@/lib/api/payloads";
+import {
+  TIME_SLOT_OPTIONS,
+  addDaysToDate,
+  formatTimeLabel,
+  getValidTimeOptions,
+  isDateWithinBookingWindow,
+  toDateInputValue,
+} from "@/lib/timeOptions";
+import { format } from "date-fns";
+import {
+  Ban,
   CalendarCheck,
-  Users,
-  IndianRupee,
-  Ticket,
-  LogOut,
-  Loader2,
-  RefreshCw,
-  Clock,
-  PlusCircle,
+  CalendarDays,
   ChevronDown,
   ChevronUp,
+  Clock,
+  IndianRupee,
+  Loader2,
+  LogOut,
+  PlusCircle,
+  RefreshCw,
   Search,
-  Ban,
   Settings,
+  ShieldCheck,
+  Ticket,
   UserRound,
+  Users,
   XCircle,
-  CalendarDays,
 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 
 interface AdminStats {
   totalBookings: number;
@@ -112,15 +132,7 @@ interface SearchBooking {
 }
 
 function formatSlotLabel(time: string): string {
-  const [h] = time.split(":");
-  const hour = parseInt(h, 10);
-  const endHour = hour + 1;
-  const fmt = (hr: number) => {
-    const ampm = hr >= 12 ? "PM" : "AM";
-    const h12 = hr > 12 ? hr - 12 : hr === 0 ? 12 : hr;
-    return `${h12}:00 ${ampm}`;
-  };
-  return `${fmt(hour)} – ${fmt(endHour)}`;
+  return formatTimeLabel(time);
 }
 
 function isCancellationLocked(booking: {
@@ -128,37 +140,58 @@ function isCancellationLocked(booking: {
   paymentStatus?: string;
   otpVerified?: boolean;
 }): boolean {
-  const verified = typeof booking.checkinVerified === "boolean" ? booking.checkinVerified : !!booking.otpVerified;
+  const verified =
+    typeof booking.checkinVerified === "boolean"
+      ? booking.checkinVerified
+      : !!booking.otpVerified;
   return verified && booking.paymentStatus === "done";
 }
 
-const SLOT_OPTIONS = [
-  "09:00", "10:00", "11:00", "12:00", "13:00", "14:00",
-  "15:00", "16:00", "17:00", "18:00", "19:00", "20:00",
-];
+const SLOT_OPTIONS = TIME_SLOT_OPTIONS;
 
 export default function AdminDashboardPage() {
   const [, navigate] = useLocation();
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [slotDate, setSlotDate] = useState(new Date().toISOString().split("T")[0]);
+  const [slotDate, setSlotDate] = useState(
+    new Date().toISOString().split("T")[0]
+  );
+  const todayIso = useMemo(() => toDateInputValue(new Date()), []);
+  const maxBookingDate = useMemo(
+    () => toDateInputValue(addDaysToDate(new Date(), 6)),
+    []
+  );
   const [adminSlots, setAdminSlots] = useState<AdminSlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [bookFormOpen, setBookFormOpen] = useState(false);
   const [bookLoading, setBookLoading] = useState(false);
   const [bookForm, setBookForm] = useState({
-    name: "", email: "", phone: "", experience: "", plan: "",
-    date: "", timeSlot: "", guests: "", message: "",
+    name: "",
+    email: "",
+    phone: "",
+    experience: "",
+    plan: "",
+    date: "",
+    timeSlot: "",
+    guests: "",
+    message: "",
   });
   const [bookSlots, setBookSlots] = useState<AdminSlot[]>([]);
   const [bookSlotsLoading, setBookSlotsLoading] = useState(false);
 
   // Schedule management state
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [schedDate, setSchedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [schedDate, setSchedDate] = useState(
+    new Date().toISOString().split("T")[0]
+  );
   const [schedForm, setSchedForm] = useState<ScheduleOverride>({
-    date: "", closed: false, openTime: "09:00", closeTime: "21:00", maxGuestsPerSlot: 5, blockedSlots: "",
+    date: "",
+    closed: false,
+    openTime: "09:00",
+    closeTime: "21:00",
+    maxGuestsPerSlot: 5,
+    blockedSlots: "",
   });
   const [schedLoading, setSchedLoading] = useState(false);
   const [schedSaving, setSchedSaving] = useState(false);
@@ -175,9 +208,15 @@ export default function AdminDashboardPage() {
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
-  const [verifyingCheckinId, setVerifyingCheckinId] = useState<number | null>(null);
-  const [checkinOtpInputs, setCheckinOtpInputs] = useState<Record<number, string>>({});
-  const [paymentDialogMemberId, setPaymentDialogMemberId] = useState<number | null>(null);
+  const [verifyingCheckinId, setVerifyingCheckinId] = useState<number | null>(
+    null
+  );
+  const [checkinOtpInputs, setCheckinOtpInputs] = useState<
+    Record<number, string>
+  >({});
+  const [paymentDialogMemberId, setPaymentDialogMemberId] = useState<
+    number | null
+  >(null);
   const [paymentAmountInput, setPaymentAmountInput] = useState("");
   const [paymentModeInput, setPaymentModeInput] = useState("cash");
   const [markingPaymentId, setMarkingPaymentId] = useState<number | null>(null);
@@ -232,10 +271,18 @@ export default function AdminDashboardPage() {
   const fetchSlots = async (date: string) => {
     setSlotsLoading(true);
     try {
-      const res = await fetch(`/api/admin/slots?date=${date}`, { headers: authHeaders() });
+      const res = await fetch(`/api/admin/slots?date=${date}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
-        setAdminSlots(data.slots || []);
+        const nextSlots = (data.slots || []).filter(
+          (slot: { time: string }) => {
+            const validOptions = getValidTimeOptions(date);
+            return validOptions.includes(slot.time);
+          }
+        );
+        setAdminSlots(nextSlots);
         setSlotClosed(!!data.closed);
       }
     } catch {
@@ -247,6 +294,7 @@ export default function AdminDashboardPage() {
   };
 
   const handleSlotDateChange = (newDate: string) => {
+    if (!newDate || !isDateWithinBookingWindow(newDate)) return;
     setSlotDate(newDate);
     fetchSlots(newDate);
   };
@@ -255,7 +303,9 @@ export default function AdminDashboardPage() {
   const fetchSchedule = async (date: string) => {
     setSchedLoading(true);
     try {
-      const res = await fetch(`/api/admin/schedule/${date}`, { headers: authHeaders() });
+      const res = await fetch(`/api/admin/schedule/${date}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.override) {
@@ -269,11 +319,18 @@ export default function AdminDashboardPage() {
           });
         } else {
           setSchedForm({
-            date, closed: false, openTime: "09:00", closeTime: "21:00", maxGuestsPerSlot: 5, blockedSlots: "",
+            date,
+            closed: false,
+            openTime: "09:00",
+            closeTime: "21:00",
+            maxGuestsPerSlot: 5,
+            blockedSlots: "",
           });
         }
       }
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       setSchedLoading(false);
     }
   };
@@ -287,10 +344,14 @@ export default function AdminDashboardPage() {
   const saveSchedule = async () => {
     setSchedSaving(true);
     try {
+      const payload = buildScheduleOverridePayload({
+        ...schedForm,
+        date: schedDate,
+      });
       const res = await fetch("/api/admin/schedule", {
         method: "PUT",
         headers: authHeaders(true),
-        body: JSON.stringify({ ...schedForm, date: schedDate }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -316,18 +377,32 @@ export default function AdminDashboardPage() {
         headers: authHeaders(),
       });
       setSchedForm({
-        date: schedDate, closed: false, openTime: "09:00", closeTime: "21:00", maxGuestsPerSlot: 5, blockedSlots: "",
+        date: schedDate,
+        closed: false,
+        openTime: "09:00",
+        closeTime: "21:00",
+        maxGuestsPerSlot: 5,
+        blockedSlots: "",
       });
       if (schedDate === slotDate) fetchSlots(slotDate);
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       setSchedSaving(false);
     }
   };
 
   const toggleBlockedSlot = (slot: string) => {
     setSchedForm((prev) => {
-      const current = prev.blockedSlots ? prev.blockedSlots.split(",").map(s => s.trim()).filter(Boolean) : [];
-      const next = current.includes(slot) ? current.filter(s => s !== slot) : [...current, slot];
+      const current = prev.blockedSlots
+        ? prev.blockedSlots
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+      const next = current.includes(slot)
+        ? current.filter((s) => s !== slot)
+        : [...current, slot];
       return { ...prev, blockedSlots: next.join(",") };
     });
   };
@@ -401,11 +476,14 @@ export default function AdminDashboardPage() {
     }
     setMarkingPaymentId(paymentDialogMemberId);
     try {
-      const res = await fetch(`/api/admin/bookings/${paymentDialogMemberId}/payment`, {
-        method: "PATCH",
-        headers: authHeaders(true),
-        body: JSON.stringify({ amount, mode: paymentModeInput }),
-      });
+      const res = await fetch(
+        `/api/admin/bookings/${paymentDialogMemberId}/payment`,
+        {
+          method: "PATCH",
+          headers: authHeaders(true),
+          body: JSON.stringify({ amount, mode: paymentModeInput }),
+        }
+      );
       if (!res.ok) {
         const err = await res.json();
         alert(err.error || "Failed to mark payment");
@@ -432,13 +510,17 @@ export default function AdminDashboardPage() {
       const params = new URLSearchParams({ page: String(page), perPage: "15" });
       if (searchQuery) params.set("q", searchQuery);
       if (searchStatus !== "all") params.set("status", searchStatus);
-      const res = await fetch(`/api/admin/bookings?${params}`, { headers: authHeaders() });
+      const res = await fetch(`/api/admin/bookings?${params}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         setSearchResults(data.bookings || []);
         setSearchTotal(data.total || 0);
       }
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       setSearchLoading(false);
     }
   };
@@ -446,10 +528,18 @@ export default function AdminDashboardPage() {
   const fetchBookSlots = async (date: string) => {
     setBookSlotsLoading(true);
     try {
-      const res = await fetch(`/api/admin/slots?date=${date}`, { headers: authHeaders() });
+      const res = await fetch(`/api/admin/slots?date=${date}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
-        setBookSlots(data.slots || []);
+        const nextSlots = (data.slots || []).filter(
+          (slot: { time: string }) => {
+            const validOptions = getValidTimeOptions(date);
+            return validOptions.includes(slot.time);
+          }
+        );
+        setBookSlots(nextSlots);
       }
     } catch {
       setBookSlots([]);
@@ -459,28 +549,55 @@ export default function AdminDashboardPage() {
   };
 
   const handleBookFormChange = (field: string, value: string) => {
-    setBookForm((prev) => ({ ...prev, [field]: value }));
+    if (field === "date" && value && !isDateWithinBookingWindow(value)) {
+      return;
+    }
+
+    const nextValue =
+      field === "phone" ? value.replace(/\D/g, "").slice(0, 10) : value;
+
+    setBookForm((prev) => ({ ...prev, [field]: nextValue }));
     if (field === "date" && value) {
       fetchBookSlots(value);
       setBookForm((prev) => ({ ...prev, date: value, timeSlot: "" }));
     }
   };
 
-  const schedDateValue = schedDate ? new Date(`${schedDate}T00:00:00`) : undefined;
-  const bookDateValue = bookForm.date ? new Date(`${bookForm.date}T00:00:00`) : undefined;
+  const schedDateValue = schedDate
+    ? new Date(`${schedDate}T00:00:00`)
+    : undefined;
+  const bookDateValue = bookForm.date
+    ? new Date(`${bookForm.date}T00:00:00`)
+    : undefined;
 
   const handleAdminBook = async () => {
-    const { name, email, experience, plan, date, timeSlot, guests } = bookForm;
-    if (!name || !email || !experience || !plan || !date || !timeSlot || !guests) {
+    const { name, email, phone, experience, plan, date, timeSlot, guests } =
+      bookForm;
+    if (
+      !name ||
+      !email ||
+      !phone ||
+      !experience ||
+      !plan ||
+      !date ||
+      !timeSlot ||
+      !guests
+    ) {
       alert("Please fill all required fields");
+      return;
+    }
+
+    if (!/^\d{10}$/.test(phone)) {
+      alert("Phone number is required and must be exactly 10 digits.");
       return;
     }
     setBookLoading(true);
     try {
+      const payload = buildAdminBookingPayload(bookForm);
       const res = await fetch("/api/admin/bookings", {
         method: "POST",
         headers: authHeaders(true),
-        body: JSON.stringify(bookForm),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -488,7 +605,17 @@ export default function AdminDashboardPage() {
         return;
       }
       // Reset form and refresh data
-      setBookForm({ name: "", email: "", phone: "", experience: "", plan: "", date: "", timeSlot: "", guests: "", message: "" });
+      setBookForm({
+        name: "",
+        email: "",
+        phone: "",
+        experience: "",
+        plan: "",
+        date: "",
+        timeSlot: "",
+        guests: "",
+        message: "",
+      });
       setBookSlots([]);
       setBookFormOpen(false);
       fetchStats();
@@ -520,24 +647,47 @@ export default function AdminDashboardPage() {
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/resource-availability")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/admin/resource-availability")}
+            >
               <CalendarCheck className="w-4 h-4 mr-1" />
               Resource Availability
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/resources")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/admin/resources")}
+            >
               <Settings className="w-4 h-4 mr-1" />
               Resources
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/customers")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/admin/customers")}
+            >
               <UserRound className="w-4 h-4 mr-1" />
               Customers
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate("/admin/pricing")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/admin/pricing")}
+            >
               <IndianRupee className="w-4 h-4 mr-1" />
               Pricing & Offers
             </Button>
-            <Button variant="ghost" size="sm" onClick={fetchStats} disabled={loading}>
-              <RefreshCw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={fetchStats}
+              disabled={loading}
+            >
+              <RefreshCw
+                className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`}
+              />
               Refresh
             </Button>
             <Button variant="outline" size="sm" onClick={handleLogout}>
@@ -570,7 +720,9 @@ export default function AdminDashboardPage() {
                   <Ticket className="w-5 h-5 text-primary" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-3xl font-bold font-racing">{stats.totalBookings}</div>
+                  <div className="text-3xl font-bold font-racing">
+                    {stats.totalBookings}
+                  </div>
                 </CardContent>
               </Card>
 
@@ -582,7 +734,9 @@ export default function AdminDashboardPage() {
                   <CalendarCheck className="w-5 h-5 text-green-500" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-3xl font-bold font-racing text-green-500">{stats.activeSlots}</div>
+                  <div className="text-3xl font-bold font-racing text-green-500">
+                    {stats.activeSlots}
+                  </div>
                 </CardContent>
               </Card>
 
@@ -595,7 +749,8 @@ export default function AdminDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold font-racing text-yellow-500">
-                    {"\u20B9"}{stats.todayRevenue.toLocaleString("en-IN")}
+                    {"\u20B9"}
+                    {stats.todayRevenue.toLocaleString("en-IN")}
                   </div>
                 </CardContent>
               </Card>
@@ -609,7 +764,8 @@ export default function AdminDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold font-racing text-emerald-500">
-                    {"\u20B9"}{stats.totalRevenue.toLocaleString("en-IN")}
+                    {"\u20B9"}
+                    {stats.totalRevenue.toLocaleString("en-IN")}
                   </div>
                 </CardContent>
               </Card>
@@ -622,7 +778,9 @@ export default function AdminDashboardPage() {
                   <Users className="w-5 h-5 text-blue-500" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-3xl font-bold font-racing text-blue-500">{stats.totalUsers}</div>
+                  <div className="text-3xl font-bold font-racing text-blue-500">
+                    {stats.totalUsers}
+                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -636,39 +794,77 @@ export default function AdminDashboardPage() {
               </CardHeader>
               <CardContent>
                 {stats.recentBookings.length === 0 ? (
-                  <p className="text-muted-foreground text-center py-8">No bookings yet</p>
+                  <p className="text-muted-foreground text-center py-8">
+                    No bookings yet
+                  </p>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">ID</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Name</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Email</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Experience</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Plan</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Date</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Slot</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Guests</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Status</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">OTP Verified</TableHead>
-                          <TableHead className="font-racing uppercase text-xs tracking-widest">Action</TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            ID
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Name
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Email
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Experience
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Plan
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Date
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Slot
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Guests
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Status
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            OTP Verified
+                          </TableHead>
+                          <TableHead className="font-racing uppercase text-xs tracking-widest">
+                            Action
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {stats.recentBookings.map((b) => (
                           <TableRow key={b.id}>
-                            <TableCell className="font-mono text-xs">#{b.id}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              #{b.id}
+                            </TableCell>
                             <TableCell>{b.name}</TableCell>
-                            <TableCell className="text-muted-foreground text-sm">{b.email}</TableCell>
-                            <TableCell className="capitalize">{b.experience}</TableCell>
-                            <TableCell className="capitalize">{b.plan}</TableCell>
+                            <TableCell className="text-muted-foreground text-sm">
+                              {b.email}
+                            </TableCell>
+                            <TableCell className="capitalize">
+                              {b.experience}
+                            </TableCell>
+                            <TableCell className="capitalize">
+                              {b.plan}
+                            </TableCell>
                             <TableCell>{b.date}</TableCell>
-                            <TableCell className="text-xs">{b.timeSlot ? formatSlotLabel(b.timeSlot) : "—"}</TableCell>
+                            <TableCell className="text-xs">
+                              {b.timeSlot ? formatSlotLabel(b.timeSlot) : "—"}
+                            </TableCell>
                             <TableCell>{b.guests}</TableCell>
                             <TableCell>
                               <Badge
-                                variant={b.status === "confirmed" ? "default" : "secondary"}
+                                variant={
+                                  b.status === "confirmed"
+                                    ? "default"
+                                    : "secondary"
+                                }
                                 className={
                                   b.status === "confirmed"
                                     ? "bg-green-600/20 text-green-400 border-green-600/30"
@@ -691,8 +887,8 @@ export default function AdminDashboardPage() {
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              {b.status === "confirmed" && (
-                                isCancellationLocked(b) ? (
+                              {b.status === "confirmed" &&
+                                (isCancellationLocked(b) ? (
                                   <Badge
                                     variant="outline"
                                     className="border-green-600/30 text-green-400 text-[10px]"
@@ -711,11 +907,13 @@ export default function AdminDashboardPage() {
                                     {cancellingId === b.id ? (
                                       <Loader2 className="w-3 h-3 animate-spin" />
                                     ) : (
-                                      <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
+                                      <>
+                                        <XCircle className="w-3 h-3 mr-1" />{" "}
+                                        Cancel
+                                      </>
                                     )}
                                   </Button>
-                                )
-                              )}
+                                ))}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -738,6 +936,8 @@ export default function AdminDashboardPage() {
                     <span className="text-sm text-muted-foreground">Date:</span>
                     <Input
                       type="date"
+                      min={todayIso}
+                      max={maxBookingDate}
                       value={slotDate}
                       onChange={(e) => handleSlotDateChange(e.target.value)}
                       className="w-44"
@@ -753,7 +953,9 @@ export default function AdminDashboardPage() {
                 ) : slotClosed ? (
                   <div className="text-center py-8">
                     <Ban className="w-8 h-8 text-red-400 mx-auto mb-2" />
-                    <p className="text-red-400 font-racing uppercase tracking-widest">Closed for this date</p>
+                    <p className="text-red-400 font-racing uppercase tracking-widest">
+                      Closed for this date
+                    </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -766,10 +968,10 @@ export default function AdminDashboardPage() {
                             s.blocked
                               ? "border-gray-600/40 bg-gray-600/5 opacity-60"
                               : s.full
-                                ? "border-red-600/40 bg-red-600/5"
-                                : s.bookedGuests > 0
-                                  ? "border-yellow-500/40 bg-yellow-500/5"
-                                  : "border-green-600/40 bg-green-600/5"
+                              ? "border-red-600/40 bg-red-600/5"
+                              : s.bookedGuests > 0
+                              ? "border-yellow-500/40 bg-yellow-500/5"
+                              : "border-green-600/40 bg-green-600/5"
                           }`}
                         >
                           <div className="flex items-center justify-between mb-2">
@@ -781,13 +983,17 @@ export default function AdminDashboardPage() {
                                 s.blocked
                                   ? "bg-gray-600/20 text-gray-400 border-gray-600/30"
                                   : s.full
-                                    ? "bg-red-600/20 text-red-400 border-red-600/30"
-                                    : s.bookedGuests > 0
-                                      ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-                                      : "bg-green-600/20 text-green-400 border-green-600/30"
+                                  ? "bg-red-600/20 text-red-400 border-red-600/30"
+                                  : s.bookedGuests > 0
+                                  ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                                  : "bg-green-600/20 text-green-400 border-green-600/30"
                               }
                             >
-                              {s.blocked ? "Blocked" : s.full ? "Full" : `${s.availableSpots}/${max} free`}
+                              {s.blocked
+                                ? "Blocked"
+                                : s.full
+                                ? "Full"
+                                : `${s.availableSpots}/${max} free`}
                             </Badge>
                           </div>
                           <div className="text-xs text-muted-foreground mb-1">
@@ -800,21 +1006,42 @@ export default function AdminDashboardPage() {
                                   key={m.id}
                                   className="text-xs bg-background/50 rounded px-2 py-1"
                                 >
-                                  <div className="font-medium truncate">{m.name}</div>
-                                  <div className="text-[11px] text-muted-foreground truncate">{m.phone || "No phone"}</div>
+                                  <div className="font-medium truncate">
+                                    {m.name}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground truncate">
+                                    {m.phone || "No phone"}
+                                  </div>
                                   <div className="text-[11px] text-muted-foreground">
-                                    {m.guests} guest{Number(m.guests) !== 1 ? "s" : ""}
+                                    {m.guests} guest
+                                    {Number(m.guests) !== 1 ? "s" : ""}
                                   </div>
                                   <div className="text-[11px] mt-1">
-                                    {m.checkinVerified && m.paymentStatus === "done" ? (
-                                      <span className="text-green-400">✓ OTP Verified · ₹{m.paymentAmount} Paid{m.paymentMode ? ` (${m.paymentMode.toUpperCase()})` : ""}</span>
+                                    {m.checkinVerified &&
+                                    m.paymentStatus === "done" ? (
+                                      <span className="text-green-400">
+                                        ✓ OTP Verified · ₹{m.paymentAmount} Paid
+                                        {m.paymentMode
+                                          ? ` (${m.paymentMode.toUpperCase()})`
+                                          : ""}
+                                      </span>
                                     ) : m.checkinVerified ? (
-                                      <span className="text-yellow-400">✓ OTP Verified · Payment Pending</span>
+                                      <span className="text-yellow-400">
+                                        ✓ OTP Verified · Payment Pending
+                                      </span>
                                     ) : m.checkinOtpVisible ? (
-                                      <span className="text-green-400">OTP: {m.checkinOtp}</span>
+                                      <span className="text-green-400">
+                                        OTP: {m.checkinOtp}
+                                      </span>
                                     ) : (
                                       <span className="text-amber-400">
-                                        OTP hidden{typeof m.minutesUntilSlot === "number" ? ` (${Math.max(m.minutesUntilSlot, 0)} min left)` : ""}
+                                        OTP hidden
+                                        {typeof m.minutesUntilSlot === "number"
+                                          ? ` (${Math.max(
+                                              m.minutesUntilSlot,
+                                              0
+                                            )} min left)`
+                                          : ""}
                                       </span>
                                     )}
                                   </div>
@@ -822,7 +1049,14 @@ export default function AdminDashboardPage() {
                                     <div className="mt-1 flex items-center gap-1">
                                       <Input
                                         value={checkinOtpInputs[m.id] || ""}
-                                        onChange={(e) => setCheckinOtpInputs((prev) => ({ ...prev, [m.id]: e.target.value.replace(/\D/g, "").slice(0, 6) }))}
+                                        onChange={(e) =>
+                                          setCheckinOtpInputs((prev) => ({
+                                            ...prev,
+                                            [m.id]: e.target.value
+                                              .replace(/\D/g, "")
+                                              .slice(0, 6),
+                                          }))
+                                        }
                                         placeholder="Enter OTP"
                                         className="h-6 text-[10px] px-2"
                                       />
@@ -830,10 +1064,16 @@ export default function AdminDashboardPage() {
                                         variant="outline"
                                         size="sm"
                                         className="h-6 text-[10px]"
-                                        onClick={() => handleVerifyCheckin(m.id)}
+                                        onClick={() =>
+                                          handleVerifyCheckin(m.id)
+                                        }
                                         disabled={verifyingCheckinId === m.id}
                                       >
-                                        {verifyingCheckinId === m.id ? <Loader2 className="w-3 h-3 animate-spin" /> : "Verify"}
+                                        {verifyingCheckinId === m.id ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          "Verify"
+                                        )}
                                       </Button>
                                     </div>
                                   ) : m.paymentStatus !== "done" ? (
@@ -841,7 +1081,10 @@ export default function AdminDashboardPage() {
                                       variant="outline"
                                       size="sm"
                                       className="mt-1 h-6 text-[10px]"
-                                      onClick={() => { setPaymentAmountInput(""); setPaymentDialogMemberId(m.id); }}
+                                      onClick={() => {
+                                        setPaymentAmountInput("");
+                                        setPaymentDialogMemberId(m.id);
+                                      }}
                                     >
                                       Mark Payment
                                     </Button>
@@ -884,12 +1127,23 @@ export default function AdminDashboardPage() {
                 <CardContent className="space-y-4">
                   <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Date</label>
-                      <Popover open={schedCalendarOpen} onOpenChange={setSchedCalendarOpen}>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Date
+                      </label>
+                      <Popover
+                        open={schedCalendarOpen}
+                        onOpenChange={setSchedCalendarOpen}
+                      >
                         <PopoverTrigger asChild>
-                          <Button type="button" variant="outline" className="w-full justify-start text-left font-normal">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="w-full justify-start text-left font-normal"
+                          >
                             <CalendarDays className="mr-2 h-4 w-4" />
-                            {schedDateValue ? format(schedDateValue, "PPP") : "Pick date"}
+                            {schedDateValue
+                              ? format(schedDateValue, "PPP")
+                              : "Pick date"}
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
@@ -898,7 +1152,9 @@ export default function AdminDashboardPage() {
                             selected={schedDateValue}
                             onSelect={(nextDate) => {
                               if (!nextDate) return;
-                              handleSchedDateChange(format(nextDate, "yyyy-MM-dd"));
+                              handleSchedDateChange(
+                                format(nextDate, "yyyy-MM-dd")
+                              );
                               setSchedCalendarOpen(false);
                             }}
                             initialFocus
@@ -907,31 +1163,52 @@ export default function AdminDashboardPage() {
                       </Popover>
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Open Time</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Open Time
+                      </label>
                       <Input
                         type="time"
                         value={schedForm.openTime}
-                        onChange={(e) => setSchedForm((p) => ({ ...p, openTime: e.target.value }))}
+                        onChange={(e) =>
+                          setSchedForm((p) => ({
+                            ...p,
+                            openTime: e.target.value,
+                          }))
+                        }
                         disabled={schedForm.closed}
                       />
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Close Time</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Close Time
+                      </label>
                       <Input
                         type="time"
                         value={schedForm.closeTime}
-                        onChange={(e) => setSchedForm((p) => ({ ...p, closeTime: e.target.value }))}
+                        onChange={(e) =>
+                          setSchedForm((p) => ({
+                            ...p,
+                            closeTime: e.target.value,
+                          }))
+                        }
                         disabled={schedForm.closed}
                       />
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Max Guests/Slot</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Max Guests/Slot
+                      </label>
                       <Input
                         type="number"
                         min={1}
                         max={20}
                         value={schedForm.maxGuestsPerSlot}
-                        onChange={(e) => setSchedForm((p) => ({ ...p, maxGuestsPerSlot: Number(e.target.value || 1) }))}
+                        onChange={(e) =>
+                          setSchedForm((p) => ({
+                            ...p,
+                            maxGuestsPerSlot: Number(e.target.value || 1),
+                          }))
+                        }
                         disabled={schedForm.closed}
                       />
                     </div>
@@ -941,12 +1218,16 @@ export default function AdminDashboardPage() {
                     <Button
                       type="button"
                       variant={schedForm.closed ? "destructive" : "outline"}
-                      onClick={() => setSchedForm((p) => ({ ...p, closed: !p.closed }))}
+                      onClick={() =>
+                        setSchedForm((p) => ({ ...p, closed: !p.closed }))
+                      }
                     >
                       <Ban className="w-4 h-4 mr-2" />
                       {schedForm.closed ? "Closed Date" : "Mark Date Closed"}
                     </Button>
-                    {schedLoading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+                    {schedLoading && (
+                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                    )}
                   </div>
 
                   {!schedForm.closed && (
@@ -982,10 +1263,16 @@ export default function AdminDashboardPage() {
 
                   <div className="flex items-center gap-2">
                     <Button onClick={saveSchedule} disabled={schedSaving}>
-                      {schedSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                      {schedSaving ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : null}
                       Save Override
                     </Button>
-                    <Button variant="outline" onClick={resetSchedule} disabled={schedSaving}>
+                    <Button
+                      variant="outline"
+                      onClick={resetSchedule}
+                      disabled={schedSaving}
+                    >
                       Reset To Defaults
                     </Button>
                   </div>
@@ -1023,21 +1310,35 @@ export default function AdminDashboardPage() {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                     />
-                    <Select value={searchStatus} onValueChange={setSearchStatus}>
-                      <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                    <Select
+                      value={searchStatus}
+                      onValueChange={setSearchStatus}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All</SelectItem>
                         <SelectItem value="confirmed">Confirmed</SelectItem>
                         <SelectItem value="cancelled">Cancelled</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Button onClick={() => searchBookings(1)} disabled={searchLoading}>
-                      {searchLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
+                    <Button
+                      onClick={() => searchBookings(1)}
+                      disabled={searchLoading}
+                    >
+                      {searchLoading ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Search className="w-4 h-4 mr-2" />
+                      )}
                       Search
                     </Button>
                   </div>
 
-                  <div className="text-sm text-muted-foreground">{searchTotal} result(s)</div>
+                  <div className="text-sm text-muted-foreground">
+                    {searchTotal} result(s)
+                  </div>
 
                   <div className="overflow-x-auto">
                     <Table>
@@ -1056,15 +1357,23 @@ export default function AdminDashboardPage() {
                       <TableBody>
                         {searchResults.map((b) => (
                           <TableRow key={b.id}>
-                            <TableCell className="font-mono text-xs">#{b.id}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              #{b.id}
+                            </TableCell>
                             <TableCell>{b.name}</TableCell>
                             <TableCell>{b.email}</TableCell>
                             <TableCell>{b.date}</TableCell>
-                            <TableCell>{b.timeSlot ? formatSlotLabel(b.timeSlot) : "-"}</TableCell>
+                            <TableCell>
+                              {b.timeSlot ? formatSlotLabel(b.timeSlot) : "-"}
+                            </TableCell>
                             <TableCell>{b.guests}</TableCell>
                             <TableCell>
                               <Badge
-                                variant={b.status === "confirmed" ? "default" : "secondary"}
+                                variant={
+                                  b.status === "confirmed"
+                                    ? "default"
+                                    : "secondary"
+                                }
                                 className={
                                   b.status === "confirmed"
                                     ? "bg-green-600/20 text-green-400 border-green-600/30"
@@ -1075,8 +1384,8 @@ export default function AdminDashboardPage() {
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              {b.status === "confirmed" && (
-                                isCancellationLocked(b) ? (
+                              {b.status === "confirmed" &&
+                                (isCancellationLocked(b) ? (
                                   <Badge
                                     variant="outline"
                                     className="border-green-600/30 text-green-400 text-[10px]"
@@ -1095,17 +1404,22 @@ export default function AdminDashboardPage() {
                                     {cancellingId === b.id ? (
                                       <Loader2 className="w-3 h-3 animate-spin" />
                                     ) : (
-                                      <><XCircle className="w-3 h-3 mr-1" /> Cancel</>
+                                      <>
+                                        <XCircle className="w-3 h-3 mr-1" />{" "}
+                                        Cancel
+                                      </>
                                     )}
                                   </Button>
-                                )
-                              )}
+                                ))}
                             </TableCell>
                           </TableRow>
                         ))}
                         {!searchLoading && searchResults.length === 0 && (
                           <TableRow>
-                            <TableCell colSpan={8} className="text-center text-muted-foreground py-6">
+                            <TableCell
+                              colSpan={8}
+                              className="text-center text-muted-foreground py-6"
+                            >
                               No bookings found
                             </TableCell>
                           </TableRow>
@@ -1117,12 +1431,16 @@ export default function AdminDashboardPage() {
                   <div className="flex items-center justify-between">
                     <Button
                       variant="outline"
-                      onClick={() => searchBookings(Math.max(1, searchPage - 1))}
+                      onClick={() =>
+                        searchBookings(Math.max(1, searchPage - 1))
+                      }
                       disabled={searchPage <= 1 || searchLoading}
                     >
                       Previous
                     </Button>
-                    <span className="text-sm text-muted-foreground">Page {searchPage}</span>
+                    <span className="text-sm text-muted-foreground">
+                      Page {searchPage}
+                    </span>
                     <Button
                       variant="outline"
                       onClick={() => searchBookings(searchPage + 1)}
@@ -1157,40 +1475,68 @@ export default function AdminDashboardPage() {
                 <CardContent className="space-y-4">
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Name *</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Name *
+                      </label>
                       <Input
                         placeholder="Customer name"
                         value={bookForm.name}
-                        onChange={(e) => handleBookFormChange("name", e.target.value)}
+                        onChange={(e) =>
+                          handleBookFormChange("name", e.target.value)
+                        }
                       />
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Email *</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Email *
+                      </label>
                       <Input
                         type="email"
                         placeholder="customer@example.com"
                         value={bookForm.email}
-                        onChange={(e) => handleBookFormChange("email", e.target.value)}
+                        onChange={(e) =>
+                          handleBookFormChange("email", e.target.value)
+                        }
                       />
                     </div>
                   </div>
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Phone</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Phone *
+                      </label>
                       <Input
-                        type="tel"
-                        placeholder="+91 98765 43210"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        minLength={10}
+                        maxLength={10}
+                        required
+                        placeholder="9876543210"
                         value={bookForm.phone}
-                        onChange={(e) => handleBookFormChange("phone", e.target.value)}
+                        onChange={(e) =>
+                          handleBookFormChange("phone", e.target.value)
+                        }
                       />
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Date *</label>
-                      <Popover open={bookDateCalendarOpen} onOpenChange={setBookDateCalendarOpen}>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Date *
+                      </label>
+                      <Popover
+                        open={bookDateCalendarOpen}
+                        onOpenChange={setBookDateCalendarOpen}
+                      >
                         <PopoverTrigger asChild>
-                          <Button type="button" variant="outline" className="w-full justify-start text-left font-normal">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="w-full justify-start text-left font-normal"
+                          >
                             <CalendarDays className="mr-2 h-4 w-4" />
-                            {bookDateValue ? format(bookDateValue, "PPP") : "Pick booking date"}
+                            {bookDateValue
+                              ? format(bookDateValue, "PPP")
+                              : "Pick booking date"}
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
@@ -1199,8 +1545,18 @@ export default function AdminDashboardPage() {
                             selected={bookDateValue}
                             onSelect={(nextDate) => {
                               if (!nextDate) return;
-                              handleBookFormChange("date", format(nextDate, "yyyy-MM-dd"));
+                              const isoDate = format(nextDate, "yyyy-MM-dd");
+                              if (!isDateWithinBookingWindow(isoDate)) return;
+                              handleBookFormChange("date", isoDate);
                               setBookDateCalendarOpen(false);
+                            }}
+                            disabled={(day) => {
+                              const isoDate = format(day, "yyyy-MM-dd");
+                              return (
+                                isoDate < todayIso ||
+                                isoDate > maxBookingDate ||
+                                !isDateWithinBookingWindow(isoDate)
+                              );
                             }}
                             initialFocus
                           />
@@ -1212,11 +1568,15 @@ export default function AdminDashboardPage() {
                   {/* Slot picker for admin booking */}
                   {bookForm.date && (
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Time Slot *</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Time Slot *
+                      </label>
                       {bookSlotsLoading ? (
                         <div className="flex items-center gap-2 py-2">
                           <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Loading slots...</span>
+                          <span className="text-sm text-muted-foreground">
+                            Loading slots...
+                          </span>
                         </div>
                       ) : (
                         <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2 mt-1">
@@ -1224,7 +1584,9 @@ export default function AdminDashboardPage() {
                             <button
                               key={s.time}
                               type="button"
-                              onClick={() => handleBookFormChange("timeSlot", s.time)}
+                              onClick={() =>
+                                handleBookFormChange("timeSlot", s.time)
+                              }
                               className={`px-2 py-2 rounded-md border text-xs font-racing uppercase tracking-wide transition-all ${
                                 bookForm.timeSlot === s.time
                                   ? "border-primary bg-primary/15 text-primary ring-1 ring-primary"
@@ -1244,9 +1606,18 @@ export default function AdminDashboardPage() {
 
                   <div className="grid sm:grid-cols-3 gap-4">
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Experience *</label>
-                      <Select value={bookForm.experience} onValueChange={(v) => handleBookFormChange("experience", v)}>
-                        <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Experience *
+                      </label>
+                      <Select
+                        value={bookForm.experience}
+                        onValueChange={(v) =>
+                          handleBookFormChange("experience", v)
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select" />
+                        </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="sim">Racing Simulator</SelectItem>
                           <SelectItem value="fpv">FPV Arena</SelectItem>
@@ -1255,37 +1626,56 @@ export default function AdminDashboardPage() {
                       </Select>
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Plan *</label>
-                      <Select value={bookForm.plan} onValueChange={(v) => handleBookFormChange("plan", v)}>
-                        <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Plan *
+                      </label>
+                      <Select
+                        value={bookForm.plan}
+                        onValueChange={(v) => handleBookFormChange("plan", v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select" />
+                        </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="starter">Starter (30 min)</SelectItem>
+                          <SelectItem value="starter">
+                            Starter (30 min)
+                          </SelectItem>
                           <SelectItem value="racer">Racer (1 hour)</SelectItem>
-                          <SelectItem value="champion">Champion (2 hours)</SelectItem>
+                          <SelectItem value="champion">
+                            Champion (2 hours)
+                          </SelectItem>
                           <SelectItem value="squad">Squad (Group)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
                     <div>
-                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Guests *</label>
+                      <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                        Guests *
+                      </label>
                       <Input
                         type="number"
                         min={1}
                         placeholder="Number of guests"
                         value={bookForm.guests}
-                        onChange={(e) => handleBookFormChange("guests", e.target.value)}
+                        onChange={(e) =>
+                          handleBookFormChange("guests", e.target.value)
+                        }
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">Message (optional)</label>
+                    <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground">
+                      Message (optional)
+                    </label>
                     <Textarea
                       placeholder="Any notes..."
                       className="resize-none"
                       rows={2}
                       value={bookForm.message}
-                      onChange={(e) => handleBookFormChange("message", e.target.value)}
+                      onChange={(e) =>
+                        handleBookFormChange("message", e.target.value)
+                      }
                     />
                   </div>
 
@@ -1295,9 +1685,14 @@ export default function AdminDashboardPage() {
                     disabled={bookLoading}
                   >
                     {bookLoading ? (
-                      <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Booking...</>
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />{" "}
+                        Booking...
+                      </>
                     ) : (
-                      <><PlusCircle className="w-4 h-4 mr-2" /> Book Ticket</>
+                      <>
+                        <PlusCircle className="w-4 h-4 mr-2" /> Book Ticket
+                      </>
                     )}
                   </Button>
                 </CardContent>
@@ -1311,10 +1706,17 @@ export default function AdminDashboardPage() {
       {paymentDialogMemberId !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-background border border-border/60 rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4 space-y-4">
-            <div className="font-racing text-lg uppercase tracking-widest text-foreground">Payment Received?</div>
-            <div className="text-sm text-muted-foreground">OTP has been verified. Enter the amount paid and select payment mode.</div>
+            <div className="font-racing text-lg uppercase tracking-widest text-foreground">
+              Payment Received?
+            </div>
+            <div className="text-sm text-muted-foreground">
+              OTP has been verified. Enter the amount paid and select payment
+              mode.
+            </div>
             <div>
-              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">Amount Paid (₹)</label>
+              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">
+                Amount Paid (₹)
+              </label>
               <Input
                 type="number"
                 min="0"
@@ -1326,7 +1728,9 @@ export default function AdminDashboardPage() {
               />
             </div>
             <div>
-              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">Payment Mode</label>
+              <label className="text-xs uppercase tracking-widest font-racing text-muted-foreground mb-1 block">
+                Payment Mode
+              </label>
               <div className="flex gap-2">
                 {(["cash", "card", "upi"] as const).map((m) => (
                   <button
@@ -1339,7 +1743,11 @@ export default function AdminDashboardPage() {
                         : "border-border/40 text-muted-foreground hover:border-primary/50"
                     }`}
                   >
-                    {m === "cash" ? "💵 Cash" : m === "card" ? "💳 Card" : "📱 UPI"}
+                    {m === "cash"
+                      ? "💵 Cash"
+                      : m === "card"
+                      ? "💳 Card"
+                      : "📱 UPI"}
                   </button>
                 ))}
               </div>
@@ -1350,7 +1758,9 @@ export default function AdminDashboardPage() {
                 onClick={handleMarkPayment}
                 disabled={markingPaymentId !== null}
               >
-                {markingPaymentId !== null ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                {markingPaymentId !== null ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : null}
                 Confirm Payment
               </Button>
               <Button

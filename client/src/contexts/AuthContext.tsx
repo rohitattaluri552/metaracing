@@ -1,4 +1,14 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import {
+  buildAuthLoginPayload,
+  buildRegisterPayload,
+} from "@/lib/api/payloads";
+import {
+  createContext,
+  ReactNode,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
 export interface Customer {
   id: number;
@@ -11,7 +21,12 @@ export interface Customer {
 interface AuthContextType {
   customer: Customer | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, phone: string, password: string) => Promise<void>;
+  register: (
+    name: string,
+    email: string,
+    phone: string,
+    password: string
+  ) => Promise<void>;
   setAuthenticatedCustomer: (customer: Customer, token?: string) => void;
   logout: () => void;
   isLoading: boolean;
@@ -34,10 +49,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
+    const payload = buildAuthLoginPayload(email, password);
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -51,11 +67,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const register = async (name: string, email: string, phone: string, password: string) => {
+  const register = async (
+    name: string,
+    email: string,
+    phone: string,
+    password: string
+  ) => {
+    const payload = buildRegisterPayload(name, email, phone, password);
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, phone, password }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -84,7 +106,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ customer, login, register, setAuthenticatedCustomer, logout, isLoading }}>
+    <AuthContext.Provider
+      value={{
+        customer,
+        login,
+        register,
+        setAuthenticatedCustomer,
+        logout,
+        isLoading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
